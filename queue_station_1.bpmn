@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  id="Definitions_Queue"
+                  targetNamespace="http://example.org/queue">
+
+  <!-- ====================================================================
+       Process model of ONE A/S/c/N/D queueing station.
+       The flowing token = a customer (a transaction / entity).
+       Maps onto queue_sim.py:
+         StartEvent  -> Source.generate (arrival process A)
+         Gateway_Cap -> Station.capacity (N) check
+         Gateway_Srv -> free-server (c) check
+         Task_Wait   -> enqueue under discipline D
+         Task_Serve  -> service (distribution S)
+         Gateway_Rte -> router callback (modularity / multi-stage)
+       ==================================================================== -->
+  <bpmn:process id="Process_QueueStation" name="Queueing station A/S/c/N/D" isExecutable="false">
+
+    <bpmn:startEvent id="Start_Arrive" name="Customer arrives (A)">
+      <bpmn:outgoing>F_start_cap</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:exclusiveGateway id="GW_Cap" name="Capacity N reached?">
+      <bpmn:incoming>F_start_cap</bpmn:incoming>
+      <bpmn:outgoing>F_cap_reject</bpmn:outgoing>
+      <bpmn:outgoing>F_cap_srv</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:endEvent id="End_Reject" name="Customer lost (blocked)">
+      <bpmn:incoming>F_cap_reject</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:exclusiveGateway id="GW_Srv" name="Server free? (c servers)">
+      <bpmn:incoming>F_cap_srv</bpmn:incoming>
+      <bpmn:outgoing>F_srv_serve</bpmn:outgoing>
+      <bpmn:outgoing>F_srv_wait</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:task id="Task_Wait" name="Wait in queue (discipline D)">
+      <bpmn:incoming>F_srv_wait</bpmn:incoming>
+      <bpmn:outgoing>F_wait_serve</bpmn:outgoing>
+    </bpmn:task>
+
+    <bpmn:task id="Task_Serve" name="Service (distribution S)">
+      <bpmn:incoming>F_srv_serve</bpmn:incoming>
+      <bpmn:incoming>F_wait_serve</bpmn:incoming>
+      <bpmn:outgoing>F_serve_rte</bpmn:outgoing>
+    </bpmn:task>
+
+    <bpmn:exclusiveGateway id="GW_Rte" name="More stages?">
+      <bpmn:incoming>F_serve_rte</bpmn:incoming>
+      <bpmn:outgoing>F_rte_next</bpmn:outgoing>
+      <bpmn:outgoing>F_rte_depart</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- call activity = the modular hand-off to a downstream station -->
+    <bpmn:callActivity id="Task_Route" name="Route to next station">
+      <bpmn:incoming>F_rte_next</bpmn:incoming>
+      <bpmn:outgoing>F_next_depart</bpmn:outgoing>
+    </bpmn:callActivity>
+
+    <bpmn:endEvent id="End_Depart" name="Customer departs">
+      <bpmn:incoming>F_rte_depart</bpmn:incoming>
+      <bpmn:incoming>F_next_depart</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- sequence flows -->
+    <bpmn:sequenceFlow id="F_start_cap"   sourceRef="Start_Arrive" targetRef="GW_Cap"/>
+    <bpmn:sequenceFlow id="F_cap_reject"  name="system full"   sourceRef="GW_Cap" targetRef="End_Reject"/>
+    <bpmn:sequenceFlow id="F_cap_srv"     name="space free"    sourceRef="GW_Cap" targetRef="GW_Srv"/>
+    <bpmn:sequenceFlow id="F_srv_serve"   name="server free"   sourceRef="GW_Srv" targetRef="Task_Serve"/>
+    <bpmn:sequenceFlow id="F_srv_wait"    name="all busy"      sourceRef="GW_Srv" targetRef="Task_Wait"/>
+    <bpmn:sequenceFlow id="F_wait_serve"  name="server frees"  sourceRef="Task_Wait" targetRef="Task_Serve"/>
+    <bpmn:sequenceFlow id="F_serve_rte"   sourceRef="Task_Serve" targetRef="GW_Rte"/>
+    <bpmn:sequenceFlow id="F_rte_next"    name="yes"           sourceRef="GW_Rte" targetRef="Task_Route"/>
+    <bpmn:sequenceFlow id="F_rte_depart"  name="no"            sourceRef="GW_Rte" targetRef="End_Depart"/>
+    <bpmn:sequenceFlow id="F_next_depart" sourceRef="Task_Route" targetRef="End_Depart"/>
+
+  </bpmn:process>
+
+  <!-- ============================ DIAGRAM ============================ -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_QueueStation">
+
+      <bpmndi:BPMNShape id="di_Start" bpmnElement="Start_Arrive">
+        <dc:Bounds x="160" y="200" width="36" height="36"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="138" y="243" width="82" height="27"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_GWCap" bpmnElement="GW_Cap" isMarkerVisible="true">
+        <dc:Bounds x="260" y="193" width="50" height="50"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="248" y="160" width="74" height="27"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_Reject" bpmnElement="End_Reject">
+        <dc:Bounds x="267" y="80" width="36" height="36"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="246" y="56" width="78" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_GWSrv" bpmnElement="GW_Srv" isMarkerVisible="true">
+        <dc:Bounds x="380" y="193" width="50" height="50"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="366" y="160" width="78" height="27"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_Wait" bpmnElement="Task_Wait">
+        <dc:Bounds x="355" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_Serve" bpmnElement="Task_Serve">
+        <dc:Bounds x="520" y="178" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_GWRte" bpmnElement="GW_Rte" isMarkerVisible="true">
+        <dc:Bounds x="690" y="193" width="50" height="50"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="684" y="160" width="62" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_Route" bpmnElement="Task_Route">
+        <dc:Bounds x="665" y="320" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="di_Depart" bpmnElement="End_Depart">
+        <dc:Bounds x="830" y="200" width="36" height="36"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="812" y="243" width="72" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="di_F_start_cap" bpmnElement="F_start_cap">
+        <di:waypoint x="196" y="218"/><di:waypoint x="260" y="218"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_cap_reject" bpmnElement="F_cap_reject">
+        <di:waypoint x="285" y="193"/><di:waypoint x="285" y="116"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="291" y="150" width="56" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_cap_srv" bpmnElement="F_cap_srv">
+        <di:waypoint x="310" y="218"/><di:waypoint x="380" y="218"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="322" y="200" width="48" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_srv_serve" bpmnElement="F_srv_serve">
+        <di:waypoint x="430" y="218"/><di:waypoint x="520" y="218"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="445" y="200" width="56" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_srv_wait" bpmnElement="F_srv_wait">
+        <di:waypoint x="405" y="243"/><di:waypoint x="405" y="320"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="411" y="270" width="44" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_wait_serve" bpmnElement="F_wait_serve">
+        <di:waypoint x="455" y="360"/><di:waypoint x="570" y="360"/><di:waypoint x="570" y="258"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="480" y="342" width="70" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_serve_rte" bpmnElement="F_serve_rte">
+        <di:waypoint x="620" y="218"/><di:waypoint x="690" y="218"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_rte_next" bpmnElement="F_rte_next">
+        <di:waypoint x="715" y="243"/><di:waypoint x="715" y="320"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="721" y="270" width="20" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_rte_depart" bpmnElement="F_rte_depart">
+        <di:waypoint x="740" y="218"/><di:waypoint x="830" y="218"/>
+        <bpmndi:BPMNLabel><dc:Bounds x="778" y="200" width="16" height="14"/></bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="di_F_next_depart" bpmnElement="F_next_depart">
+        <di:waypoint x="765" y="360"/><di:waypoint x="848" y="360"/><di:waypoint x="848" y="236"/>
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
