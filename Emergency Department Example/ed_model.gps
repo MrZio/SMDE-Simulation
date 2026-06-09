@@ -1,0 +1,83 @@
+* ===========================================================================
+* ed_model.gps   --   GPSS World
+* ---------------------------------------------------------------------------
+* INDEPENDENT validation of the Python Emergency-Department simulation
+* (ed_simulation.py). The assignment requires a GPSS-compatible model to
+* validate results, so this reproduces the BASELINE scenario.
+*
+* Open Jackson network:
+*    lambda -> Triage(c1) -> Treatment(c2) --25%--> Admission(c3) -> out
+*                                          --75%----------------> out (discharged)
+*
+* Baseline parameters (time unit = HOUR):
+*    lambda = 5/h        -> mean interarrival      0.20000
+*    Triage    mu1 = 6/h -> mean service 1/6      = 0.16667 , c1 = 1
+*    Treatment mu2 = 2/h -> mean service 1/2      = 0.50000 , c2 = 3
+*    Admission mu3 = 4/h -> mean service 1/4      = 0.25000 , c3 = 1
+*    p_admit = 0.25
+*
+* GPSS World uses its OWN random engine (different from the LCG used by the
+* Python model and validated in prng_validation.R). Agreement of the metrics
+* below therefore confirms BOTH implementations independently.
+*
+* Theory targets (Jackson, see ed_simulation.ed_theory):
+*    Triage    : UTIL 0.833 | Lq 4.167 | Wq 0.833
+*    Treatment : UTIL 0.833 | Lq 3.511 | Wq 0.702
+*    Admission : UTIL 0.313 | Lq 0.142 | Wq 0.114
+*    Network   : LOS (W) 2.293 h | total L 11.47
+* ===========================================================================
+
+* ----- multi-server resources (one STORAGE per stage) ----------------------
+TRIAGE      STORAGE     1            ; c1 nurses
+TREAT       STORAGE     3            ; c2 doctors
+ADMIT       STORAGE     1            ; c3 clerks
+
+            SIMULATE
+
+* ----- patient flow ---------------------------------------------------------
+            GENERATE    (Exponential(1,0,0.2))   ; external arrivals, lambda=5/h
+            QUEUE       SYS                       ; span whole stay -> LOS, total L
+
+* --- Triage stage ---
+            QUEUE       QTRIAGE                   ; waiting probe -> Lq1, Wq1
+            ENTER       TRIAGE
+            DEPART      QTRIAGE
+            ADVANCE     (Exponential(2,0,0.16667)); triage service, mu1=6/h
+            LEAVE       TRIAGE
+
+* --- Treatment stage (bottleneck) ---
+            QUEUE       QTREAT                    ; waiting probe -> Lq2, Wq2
+            ENTER       TREAT
+            DEPART      QTREAT
+            ADVANCE     (Exponential(3,0,0.5))    ; treatment service, mu2=2/h
+            LEAVE       TREAT
+
+* --- disposition: 25% admitted, 75% discharged ---
+            TRANSFER    0.250,DISCH,ADM           ; fraction 0.25 -> ADM
+
+* --- Admission stage (only for admitted patients) ---
+ADM         QUEUE       QADMIT                    ; waiting probe -> Lq3, Wq3
+            ENTER       ADMIT
+            DEPART      QADMIT
+            ADVANCE     (Exponential(4,0,0.25))   ; admission service, mu3=4/h
+            LEAVE       ADMIT
+
+* --- common exit ---
+DISCH       DEPART      SYS                       ; stop LOS clock
+            TERMINATE                             ; (no count decrement)
+
+* ----- run-length control ---------------------------------------------------
+            GENERATE    60000                     ; one timer at t = 60000 h
+            TERMINATE   1
+            START       1
+
+* ===========================================================================
+* HOW TO READ THE REPORT
+* ---------------------------------------------------------------------------
+*   STORAGE TRIAGE/TREAT/ADMIT -> "UTIL." column         = rho per station
+*   QUEUE   QTRIAGE/QTREAT/QADMIT -> "AVE.CONT." = Lq , "AVE.TIME" = Wq
+*   QUEUE   SYS -> "AVE.CONT." = total L (~11.47) , "AVE.TIME" = LOS (~2.293 h)
+*
+* To reproduce any DoE scenario from ed_doe.py, just change the STORAGE
+* capacities (e.g. TREAT STORAGE 4 for the high doctor level) and re-run.
+* ===========================================================================
