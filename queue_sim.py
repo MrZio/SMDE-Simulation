@@ -1,491 +1,415 @@
-"""
-queue_sim.py
-============
-Event-scheduling simulation of queueing systems described in Kendall's
-notation  A / S / c / N / D.
-
-Design goals (from the practical spec)
---------------------------------------
-* Flexible parametrization : any valid (A, S, c, N, D).
-* Modularity              : Stations are connectable -> multi-stage / tandem
-                            networks (next session) work with zero changes.
-* Event-driven            : a Future Event List (FEL) drives the clock.
-                            Time advances *to the next event*, never in fixed
-                            steps.
-* Validation              : closed-form theory for the Markovian cases, plus a
-                            TRACE that can be diffed against the GPSS model.
-
-The pseudo-random numbers come from the SAME Linear Congruential Generator that
-is validated in `prng_validation.R`, so the Python and R sides are coherent.
-
-Author : <your name>
-Course : Statistics / Simulation
-"""
-
-from __future__ import annotations
-
-import heapq
-import math
-import itertools
+from pydantic import BaseModel, ConfigDict
+from enum import Enum
+import heapq, random
 from dataclasses import dataclass, field
-from collections import deque
-from typing import Callable, Optional, List
 
 
-# ---------------------------------------------------------------------------
-# 1.  Pseudo-Random Number Generator  (same LCG as the R notebook)
-#     X(n+1) = (a * X(n) + c) mod m          U = X / m  in [0, 1)
-# ---------------------------------------------------------------------------
-class LCG:
-    """Linear Congruential Generator. Defaults match prng_validation.R."""
+class DistributionArrivalTimes(Enum):
+    M = 'Markovian'
+    D = 'Deterministic'
+    G = 'General'
 
-    def __init__(self, seed: int = 42, m: int = 2 ** 31,
-                 a: int = 1103515245, c: int = 12345):
-        self.m, self.a, self.c = m, a, c
-        self.state = seed % m
+class DistributionServiceTimes(Enum):
+    M = 'Exponential'
+    D = 'Deterministic'
+    G = 'General'
 
-    def random(self) -> float:
-        """Uniform U(0,1)."""
-        self.state = (self.a * self.state + self.c) % self.m
-        return self.state / self.m
+class QueueDiscipline(Enum):
+    FIFO = 'First In First Out'
+    LIFO = 'Last In First Out'
+    SIRO = 'Service In Random Order'
 
-
-# ---------------------------------------------------------------------------
-# 2.  Distribution layer  -> turns a Kendall letter into a sampler
-#     M : Markovian / exponential      D : deterministic      G : general
-# ---------------------------------------------------------------------------
-class Distribution:
-    """
-    Maps a Kendall code to an inter-event time sampler.
-
-    code  : 'M', 'D' or 'G'
-    mean  : mean inter-event time (= 1 / rate)
-    rng   : an LCG instance (shared so the whole model is reproducible)
-    sampler : for 'G', a callable (rng) -> float. If omitted, 'G' defaults to
-              an Erlang-2 with the requested mean (a simple non-exponential,
-              non-deterministic example).
-    """
-
-    def __init__(self, code: str, mean: float, rng: LCG,
-                 sampler: Optional[Callable[[LCG], float]] = None):
-        self.code = code.upper()
-        self.mean = mean
-        self.rng = rng
-        self._custom = sampler
-
-    def sample(self) -> float:
-        if self.code == "M":                       # exponential
-            u = self.rng.random()
-            # guard against log(0)
-            u = u if u > 0.0 else 1e-12
-            return -self.mean * math.log(u)
-        if self.code == "D":                       # deterministic
-            return self.mean
-        if self.code == "G":                       # general
-            if self._custom is not None:
-                return self._custom(self.rng)
-            # default G: Erlang-2 (sum of two exponentials, same total mean)
-            u1 = max(self.rng.random(), 1e-12)
-            u2 = max(self.rng.random(), 1e-12)
-            return -(self.mean / 2.0) * (math.log(u1) + math.log(u2))
-        raise ValueError(f"Unknown distribution code: {self.code!r}")
+class EventType(Enum):
+    ARRIVAL = 'Arrival'
+    DEPARTURE = 'Departure'
 
 
-# ---------------------------------------------------------------------------
-# 3.  Event-scheduling engine
-#     The FEL is a binary heap keyed on (time, insertion-order).
-#     insertion-order breaks ties deterministically (FIFO among equal times).
-# ---------------------------------------------------------------------------
-@dataclass(order=True)
-class _ScheduledEvent:
+# Customer must be defined before Event, since Event references it
+class Customer(BaseModel):
+    id: int
+    # one entry per node visited, in order:
+    arrival_times: list[float] = []     # arrival_times[i] = time entering node i
+    service_starts: list[float] = []    # service_starts[i] = time service began at node i
+    departure_times: list[float] = []   # departure_times[i] = time leaving node i
+
+
+# each node is a complete queue -> useful for multiple queues
+# each node is a station with servers, exists for the whole simulation
+class QueueNode(BaseModel):
+    id: int
+    name: str
+    arrival_rate: float                             # lambda
+    service_rate: float                             # mu
+    arrival_distribution: DistributionArrivalTimes  # A
+    service_distribution: DistributionServiceTimes  # S
+    num_servers: int                                # c
+    sys_capacity: int | None                        # N, where None means infinite
+    queue_discipline: QueueDiscipline               # D
+    next_node: 'QueueNode | None' = None
+    is_source: bool = True                          # False = receives customers only via routing
+
+    waiting_queue: list[Customer] = []
+    busy_servers: int = 0
+
+    # --- bookkeeping for statistics (area-under-curve method) ---
+    area_queue_length: float = 0.0   # integral of Lq(t) dt
+    area_system_length: float = 0.0  # integral of L(t)  dt (queue + in service)
+    last_event_time: float = 0.0
+    total_arrivals: int = 0
+    total_lost: int = 0
+    total_served: int = 0
+
+
+@dataclass(order=True)  # order by time -> makes heapq work directly on Event
+class Event:
     time: float
-    seq: int
-    callback: Callable = field(compare=False)
-    args: tuple = field(compare=False, default=())
+    event_type: EventType = field(compare=False)
+    node: QueueNode = field(compare=False)
+    customer: Customer = field(compare=False, default=None)
 
 
-class Simulator:
-    """Minimal next-event time-advance engine."""
+class Simulation(BaseModel):
+    clock: float = 0.0
+    event_list: list[Event] = []
+    nodes: list[QueueNode] = []
+    customer_served: list[Customer] = []
+    customer_counter: int = 0
 
-    def __init__(self):
-        self.clock: float = 0.0
-        self._fel: List[_ScheduledEvent] = []
-        self._counter = itertools.count()
-        self.trace_enabled = True
-        self._trace: List[str] = []
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def schedule(self, delay: float, callback: Callable, *args) -> None:
-        ev = _ScheduledEvent(self.clock + delay, next(self._counter),
-                             callback, args)
-        heapq.heappush(self._fel, ev)
+    def schedule(self, event: Event):
+        heapq.heappush(self.event_list, event)
 
-    def log(self, msg: str) -> None:
-        line = f"[t={self.clock:9.4f}] {msg}"
-        self._trace.append(line)
-        if self.trace_enabled:
-            print(line)
+    def run(self, until: float):
+        for node in self.nodes:
+            if node.is_source:
+                self.schedule_arrival(node)
 
-    def run(self, until: float) -> None:
-        while self._fel and self._fel[0].time <= until:
-            ev = heapq.heappop(self._fel)
-            self.clock = ev.time          # <-- event-driven time advance
-            ev.callback(*ev.args)
+        while self.event_list:
+            next_event = heapq.heappop(self.event_list)
+            if next_event.time > until:
+                break
 
-    @property
-    def trace(self) -> List[str]:
-        return self._trace
+            # update area-under-curve stats for the elapsed interval
+            self._update_area_stats(next_event.node, next_event.time)
 
+            self.clock = next_event.time
+            self.process_event(next_event)
 
-# ---------------------------------------------------------------------------
-# 4.  Entity flowing through the network
-# ---------------------------------------------------------------------------
-@dataclass
-class Entity:
-    eid: int
-    t_arrival_system: float
-    t_arrival_station: float = 0.0   # reset on each station entry (per-node W)
-    t_enter_queue: float = 0.0
-    t_start_service: float = 0.0
+    def schedule_arrival(self, node: QueueNode):
+        time = self.clock + self.arrival_time(node)
+        cust = Customer(id=self.customer_counter, arrival_times=[time])
+        self.customer_counter += 1
+        self.schedule(Event(time=time, event_type=EventType.ARRIVAL, node=node, customer=cust))
 
+    def process_event(self, event: Event):
+        if event.event_type == EventType.ARRIVAL:
+            self.handle_arrival(event)
+        elif event.event_type == EventType.DEPARTURE:
+            self.handle_departure(event)
 
-# ---------------------------------------------------------------------------
-# 5.  Station  =  one  A/S/c/N/D  node.  Stations are CONNECTABLE.
-# ---------------------------------------------------------------------------
-class Station:
-    """
-    A single queueing node.
-
-      service   : Distribution            (the 'S' of Kendall)
-      c         : number of parallel servers
-      capacity  : 'N' (max in system incl. in service); math.inf if open
-      discipline: 'FIFO' | 'LIFO' | 'SIRO'
-      router    : callable(entity) -> next Station or None.
-                  This single hook is what makes the model modular: returning
-                  another Station turns a single queue into a multi-stage net.
-    """
-
-    def __init__(self, name: str, sim: Simulator, service: Distribution,
-                 c: int = 1, capacity: float = math.inf,
-                 discipline: str = "FIFO",
-                 router: Optional[Callable[[Entity], "Station"]] = None):
-        self.name = name
-        self.sim = sim
-        self.service = service
-        self.c = c
-        self.capacity = capacity
-        self.discipline = discipline.upper()
-        self.router = router
-
-        self.queue: deque[Entity] = deque()
-        self.busy_servers = 0
-
-        # ---- statistics accumulators -----------------------------------
-        self.arrivals = 0
-        self.served = 0
-        self.rejected = 0
-        self._last_t = 0.0
-        self._area_L = 0.0          # time-integral of number in system
-        self._area_Lq = 0.0         # time-integral of number in queue
-        self._busy_time = 0.0       # server-busy-time integral (for rho)
-        self._sum_W = 0.0           # sum of sojourn times
-        self._sum_Wq = 0.0          # sum of waiting (queue-only) times
-
-    # -- number currently in the node (queue + in service) ----------------
-    @property
-    def n_in_system(self) -> int:
-        return len(self.queue) + self.busy_servers
-
-    # -- keep the time-weighted integrals up to date ----------------------
-    def _accumulate(self) -> None:
-        dt = self.sim.clock - self._last_t
+    def _update_area_stats(self, node: QueueNode, now: float):
+        """Accumulate Lq(t) and L(t) areas up to 'now', using the state
+        the node was in during [last_event_time, now)."""
+        dt = now - node.last_event_time
         if dt > 0:
-            self._area_L += self.n_in_system * dt
-            self._area_Lq += len(self.queue) * dt
-            self._busy_time += self.busy_servers * dt
-        self._last_t = self.sim.clock
+            node.area_queue_length += len(node.waiting_queue) * dt
+            node.area_system_length += (len(node.waiting_queue) + node.busy_servers) * dt
+        node.last_event_time = now
 
-    # -- the queue discipline: which waiting entity to serve next ---------
-    def _pop_next(self) -> Entity:
-        if self.discipline == "FIFO":
-            return self.queue.popleft()
-        if self.discipline == "LIFO":
-            return self.queue.pop()
-        if self.discipline == "SIRO":
-            # service in random order -> pick a uniform index via the LCG
-            idx = int(self.service.rng.random() * len(self.queue))
-            idx = min(idx, len(self.queue) - 1)
-            ent = self.queue[idx]
-            del self.queue[idx]
-            return ent
-        raise ValueError(f"Unknown discipline {self.discipline!r}")
+    def handle_arrival(self, event: Event):
+        node = event.node
+        customer = event.customer
+        node.total_arrivals += 1
 
-    # -- EVENT: an entity arrives at this station -------------------------
-    def arrive(self, ent: Entity) -> None:
-        self._accumulate()
-        self.arrivals += 1
-        ent.t_arrival_station = self.sim.clock        # local arrival (per-node W)
+        total_in_system = len(node.waiting_queue) + node.busy_servers
+        if node.sys_capacity is not None and total_in_system >= node.sys_capacity:
+            node.total_lost += 1  # customer lost (blocked)
+        elif node.busy_servers < node.num_servers:  # a server is free
+            node.busy_servers += 1
+            customer.service_starts.append(self.clock)
+            service_time = self.service_time(node)
 
-        if self.n_in_system >= self.capacity:        # blocked / lost
-            self.rejected += 1
-            self.sim.log(f"REJECT  e{ent.eid:<4d} @ {self.name} "
-                         f"(system full N={self.capacity})")
-            return
-
-        if self.busy_servers < self.c:               # a server is free
-            self.busy_servers += 1
-            ent.t_enter_queue = self.sim.clock        # waited 0 in queue
-            ent.t_start_service = self.sim.clock
-            st = self.service.sample()
-            self.sim.schedule(st, self.depart, ent)
-            self.sim.log(f"ARRIVE  e{ent.eid:<4d} @ {self.name}  "
-                         f"-> SERVICE ({st:.3f})  busy={self.busy_servers}/"
-                         f"{self.c} q={len(self.queue)}")
-        else:                                         # all servers busy -> wait
-            ent.t_enter_queue = self.sim.clock
-            self.queue.append(ent)
-            self.sim.log(f"ARRIVE  e{ent.eid:<4d} @ {self.name}  "
-                         f"-> QUEUE  busy={self.busy_servers}/{self.c} "
-                         f"q={len(self.queue)}")
-
-    # -- EVENT: a service completes ---------------------------------------
-    def depart(self, ent: Entity) -> None:
-        self._accumulate()
-        self.busy_servers -= 1
-        self.served += 1
-
-        sojourn = self.sim.clock - ent.t_arrival_station
-        self._sum_W += sojourn
-        self._sum_Wq += ent.t_start_service - ent.t_enter_queue
-
-        self.sim.log(f"DEPART  e{ent.eid:<4d} @ {self.name}  "
-                     f"sojourn={sojourn:.3f}  busy={self.busy_servers}/{self.c}"
-                     f" q={len(self.queue)}")
-
-        # pull the next waiting entity into the freed server
-        if self.queue:
-            nxt = self._pop_next()
-            self.busy_servers += 1
-            nxt.t_start_service = self.sim.clock
-            st = self.service.sample()
-            self.sim.schedule(st, self.depart, nxt)
-            self.sim.log(f"  start  e{nxt.eid:<4d} @ {self.name}  "
-                         f"SERVICE ({st:.3f})  q={len(self.queue)}")
-
-        # ---- routing : modular hand-off to the next stage --------------
-        if self.router is not None:
-            target = self.router(ent)
-            if target is not None:
-                self.sim.log(f"  route  e{ent.eid:<4d}  {self.name} "
-                             f"-> {target.name}")
-                target.arrive(ent)
-
-    # -- close the integrals at end of run --------------------------------
-    def finalize(self) -> None:
-        self._accumulate()
-
-    # -- empirical performance measures -----------------------------------
-    def report(self, horizon: float) -> dict:
-        L = self._area_L / horizon
-        Lq = self._area_Lq / horizon
-        rho = self._busy_time / (self.c * horizon)
-        W = self._sum_W / self.served if self.served else float("nan")
-        Wq = self._sum_Wq / self.served if self.served else float("nan")
-        p_loss = self.rejected / self.arrivals if self.arrivals else 0.0
-        return dict(L=L, Lq=Lq, rho=rho, W=W, Wq=Wq,
-                    arrivals=self.arrivals, served=self.served,
-                    rejected=self.rejected, p_loss=p_loss)
-
-
-# ---------------------------------------------------------------------------
-# 6.  Source  =  external arrival stream (the 'A' of Kendall).
-#     Kept separate from Station so that downstream stations simply receive
-#     their arrivals through routing.  This is the heart of the modularity.
-# ---------------------------------------------------------------------------
-class Source:
-    def __init__(self, name: str, sim: Simulator, arrival: Distribution,
-                 target: Station, max_entities: float = math.inf):
-        self.name = name
-        self.sim = sim
-        self.arrival = arrival
-        self.target = target
-        self.max_entities = max_entities
-        self._n = 0
-
-    def start(self) -> None:
-        self._schedule_next()
-
-    def _schedule_next(self) -> None:
-        if self._n >= self.max_entities:
-            return
-        self.sim.schedule(self.arrival.sample(), self._generate)
-
-    def _generate(self) -> None:
-        self._n += 1
-        ent = Entity(eid=self._n, t_arrival_system=self.sim.clock)
-        self.target.arrive(ent)
-        self._schedule_next()
-
-
-# ---------------------------------------------------------------------------
-# 7.  Closed-form theory  (for VALIDATION of the simulation)
-# ---------------------------------------------------------------------------
-def theory(A: str, S: str, c: int, lam: float, mu: float,
-           N: float = math.inf) -> Optional[dict]:
-    """
-    Returns analytic L, Lq, W, Wq, rho for the Markovian cases that have a
-    closed form.  Returns None when no simple formula applies (then trust the
-    GPSS cross-check instead).
-    """
-    A, S = A.upper(), S.upper()
-    rho = lam / (c * mu)
-
-    # ---- M/M/1 (infinite) -------------------------------------------------
-    if A == "M" and S == "M" and c == 1 and math.isinf(N):
-        if rho >= 1:
-            return None
-        L = rho / (1 - rho)
-        Lq = rho ** 2 / (1 - rho)
-        W = 1.0 / (mu - lam)
-        Wq = rho / (mu - lam)
-        return dict(L=L, Lq=Lq, W=W, Wq=Wq, rho=rho)
-
-    # ---- M/M/1/N (finite capacity) ---------------------------------------
-    if A == "M" and S == "M" and c == 1 and not math.isinf(N):
-        r = lam / mu
-        if abs(r - 1.0) < 1e-9:
-            P0 = 1.0 / (N + 1)
-            L = N / 2.0
+            self.schedule(Event(
+                time=self.clock + service_time,
+                event_type=EventType.DEPARTURE,
+                node=node,
+                customer=customer
+            ))
         else:
-            P0 = (1 - r) / (1 - r ** (N + 1))
-            L = r * (1 - (N + 1) * r ** N + N * r ** (N + 1)) / \
-                ((1 - r) * (1 - r ** (N + 1)))
-        PN = (r ** N) * P0
-        lam_eff = lam * (1 - PN)
-        W = L / lam_eff
-        Wq = W - 1.0 / mu
-        Lq = lam_eff * Wq
-        return dict(L=L, Lq=Lq, W=W, Wq=Wq, rho=lam_eff / mu, p_block=PN)
+            node.waiting_queue.append(customer)
 
-    # ---- M/M/c (infinite) -------------------------------------------------
-    if A == "M" and S == "M" and c >= 1 and math.isinf(N):
-        if rho >= 1:
-            return None
-        a = lam / mu
-        s = sum(a ** n / math.factorial(n) for n in range(c))
-        last = a ** c / (math.factorial(c) * (1 - rho))
-        P0 = 1.0 / (s + last)
-        Lq = P0 * (a ** c) * rho / (math.factorial(c) * (1 - rho) ** 2)
-        Wq = Lq / lam
-        W = Wq + 1.0 / mu
-        L = lam * W
-        return dict(L=L, Lq=Lq, W=W, Wq=Wq, rho=rho)
+        if node.is_source:
+            self.schedule_arrival(node)  # schedule next external arrival
 
-    return None
+    def handle_departure(self, event: Event):
+        node = event.node
+        customer = event.customer
+        customer.departure_times.append(self.clock)
+        node.total_served += 1
 
+        # only count as "fully served" once it leaves the LAST node
+        if not node.next_node:
+            self.customer_served.append(customer)
 
-# ---------------------------------------------------------------------------
-# 8.  Demonstrations
-# ---------------------------------------------------------------------------
-def banner(txt: str) -> None:
-    print("\n" + "=" * 70)
-    print(txt)
-    print("=" * 70)
-
-
-def demo_single(A="M", S="M", c=1, N=math.inf, D="FIFO",
-                lam=1.0, mu=1.25, horizon=20000.0,
-                trace_first_n=25, seed=42):
-    """Run a single A/S/c/N/D station and validate it against theory."""
-    label = f"{A}/{S}/{c}" + ("" if math.isinf(N) else f"/{int(N)}") + f"  ({D})"
-    banner(f"SINGLE STATION   {label}   lambda={lam}  mu={mu}")
-
-    rng = LCG(seed=seed)
-    sim = Simulator()
-    sim.trace_enabled = True
-
-    service = Distribution(S, mean=1.0 / mu, rng=rng)
-    station = Station("Q1", sim, service, c=c, capacity=N, discipline=D)
-    arrival = Distribution(A, mean=1.0 / lam, rng=rng)
-    source = Source("SRC", sim, arrival, station)
-
-    # ---- TRACE (first events only, full trace kept in sim.trace) --------
-    print(f"\n--- TRACE (first {trace_first_n} events) ---")
-    _printed = {"n": 0}
-    _orig_log = sim.log
-
-    def capped_log(msg):
-        if _printed["n"] < trace_first_n:
-            _orig_log(msg)
-            _printed["n"] += 1
+        if node.waiting_queue:
+            next_customer = self.pick_next_customer(node)
+            next_customer.service_starts.append(self.clock)
+            service_time = self.service_time(node)
+            self.schedule(Event(
+                time=self.clock + service_time,
+                event_type=EventType.DEPARTURE,
+                node=node,
+                customer=next_customer
+            ))
         else:
-            sim._trace.append(f"[t={sim.clock:9.4f}] {msg}")
-    sim.log = capped_log
+            node.busy_servers -= 1
 
-    source.start()
-    sim.run(until=horizon)
-    station.finalize()
+        if node.next_node:
+            self.route_to_next(customer, node.next_node)
 
-    sim.log = _orig_log
-    print(f"... ({len(sim.trace)} events total, trace truncated) ...")
+    def final_statistics(self) -> dict:
+        """Compute Wq, Lq, W, L, rho and other descriptive stats per node
+        and for the overall simulation. Customer time fields are lists,
+        indexed by the order in which nodes were visited (0 = first node
+        visited, -1 = last node visited)."""
+        # flush remaining area up to the final clock for every node
+        for node in self.nodes:
+            self._update_area_stats(node, self.clock)
 
-    # ---- results vs theory ----------------------------------------------
-    emp = station.report(horizon)
-    th = theory(A, S, c, lam, mu, N)
+        # build a node-name -> position-in-path index, so we know which
+        # list index in each customer's time fields corresponds to which
+        # node. all customers follows same path
+        node_order = []
+        n = self.nodes[0] if self.nodes else None
+        # find a source node to start the path from
+        for candidate in self.nodes:
+            if candidate.is_source:
+                n = candidate
+                break
+        while n is not None:
+            node_order.append(n)
+            n = n.next_node
+        name_to_index = {nd.name: i for i, nd in enumerate(node_order)}
 
-    print("\n--- RESULTS  (simulation  vs  theory) ---")
-    print(f"{'metric':<8}{'simulated':>14}{'theoretical':>16}{'rel.err %':>12}")
-    for k in ("rho", "L", "Lq", "W", "Wq"):
-        sv = emp.get(k, float('nan'))
-        tv = th.get(k) if th else None
-        if tv is None:
-            print(f"{k:<8}{sv:>14.4f}{'   (no formula)':>16}{'':>12}")
+        results = {}
+        for node in self.nodes:
+            idx = name_to_index.get(node.name)
+
+            # Lq, L from area-under-curve
+            Lq = node.area_queue_length / self.clock if self.clock > 0 else 0.0
+            L = node.area_system_length / self.clock if self.clock > 0 else 0.0
+
+            # rho = server utilization
+            rho = (node.area_system_length - node.area_queue_length) / (self.clock * node.num_servers) \
+                if self.clock > 0 else 0.0
+
+            # per-node Wq, W (stage-level), using each served customer's
+            # i-th visit (idx) - only customers that actually reached this
+            # node have an entry at position idx
+            wq_node, w_node = [], []
+            for c in self.customer_served:
+                if idx is not None and idx < len(c.arrival_times) and idx < len(c.departure_times):
+                    wq_node.append(c.service_starts[idx] - c.arrival_times[idx])
+                    w_node.append(c.departure_times[idx] - c.arrival_times[idx])
+
+            results[node.name] = {
+                "Lq": Lq,                           # avg number of customers waiting
+                "L": L,                             # avg number of customers in system
+                "rho": rho,                         # server utilization
+                "sys_capacity": node.sys_capacity,  # N (Kendall) - None = infinite
+                "num_servers": node.num_servers,    # c (Kendall)
+                "total_arrivals": node.total_arrivals,
+                "total_served": node.total_served,
+                "total_lost": node.total_lost,
+                "Wq": sum(wq_node) / len(wq_node) if wq_node else 0.0,  # stage-level wait
+                "W": sum(w_node) / len(w_node) if w_node else 0.0,      # stage-level total time
+            }
+
+        # overall = full path through the system, first node entered ->
+        # last node departed. customer_served only contains customers
+        # that exited the LAST node (see handle_departure).
+        wq_overall, w_overall = [], []
+        for c in self.customer_served:
+            if c.arrival_times and c.departure_times and c.service_starts:
+                wq_overall.append(sum(
+                    c.service_starts[i] - c.arrival_times[i]
+                    for i in range(len(c.arrival_times))
+                ))
+                w_overall.append(c.departure_times[-1] - c.arrival_times[0])
+
+        results["overall"] = {
+            "n_customers_served": len(self.customer_served),
+            "Wq": sum(wq_overall) / len(wq_overall) if wq_overall else 0.0,
+            "W": sum(w_overall) / len(w_overall) if w_overall else 0.0,
+            "simulation_time": self.clock,
+        }
+        return results
+
+    def pick_next_customer(self, node: QueueNode):
+        if node.queue_discipline == QueueDiscipline.FIFO:
+            return node.waiting_queue.pop(0)
+        elif node.queue_discipline == QueueDiscipline.LIFO:
+            return node.waiting_queue.pop(-1)
+        elif node.queue_discipline == QueueDiscipline.SIRO:
+            customer = random.choice(node.waiting_queue)
+            node.waiting_queue.remove(customer)
+            return customer
+
+    def arrival_time(self, node: QueueNode) -> float:
+        if node.arrival_distribution == DistributionArrivalTimes.M:
+            return random.expovariate(node.arrival_rate)
+        elif node.arrival_distribution == DistributionArrivalTimes.D:
+            return 1.0 / node.arrival_rate
+        return random.uniform(0.5, 1.5)
+
+    def service_time(self, node: QueueNode) -> float:
+        if node.service_distribution == DistributionServiceTimes.M:
+            return random.expovariate(node.service_rate)
+        elif node.service_distribution == DistributionServiceTimes.D:
+            return 1.0 / node.service_rate
+        return random.uniform(0.5, 1.5)
+
+    def route_to_next(self, customer: Customer, next_node: QueueNode, delay: float = 0.0):
+        arrival_time_next = self.clock + delay
+        customer.arrival_times.append(arrival_time_next)
+        self.schedule(Event(
+            time=arrival_time_next,
+            event_type=EventType.ARRIVAL,
+            node=next_node,
+            customer=customer
+        ))
+
+
+def print_comparison(stats: dict, node_name: str, theoretical: dict | None = None,
+                     overall: bool = True, title: str = ""):
+    """Print simulation results for a node side-by-side with theoretical
+    values (if provided). 'theoretical' is a dict with keys among:
+    rho, Lq, L, Wq, W. Pass None when no theoretical reference exists
+    (e.g. for stages of a tandem queue without a closed-form solution)."""
+    s = stats[node_name]
+    o = stats["overall"] if overall else None
+
+    if title:
+        print(f"\n{title}")
+        print("=" * len(title))
+
+    col1 = "Metric"
+    col2 = "Simulated"
+    col3 = "Theoretical"
+    col4 = "Abs. error"
+    print(f"{col1:<22}{col2:>14}{col3:>16}{col4:>14}")
+    print("-" * 66)
+
+    def row(label: str, sim_val, theo_val=None, fmt: str = "{:.4f}"):
+        sim_str = fmt.format(sim_val) if isinstance(sim_val, (int, float)) else str(sim_val)
+        if theo_val is None:
+            theo_str = "-"
+            err_str = "-"
         else:
-            err = 100 * abs(sv - tv) / tv if tv else 0.0
-            print(f"{k:<8}{sv:>14.4f}{tv:>16.4f}{err:>12.2f}")
-    print(f"\narrivals={emp['arrivals']}  served={emp['served']}  "
-          f"rejected={emp['rejected']}  P(loss)={emp['p_loss']:.4f}")
-    return emp, th
+            theo_str = fmt.format(theo_val)
+            err_str = fmt.format(abs(sim_val - theo_val))
+        print(f"{label:<22}{sim_str:>14}{theo_str:>16}{err_str:>14}")
 
+    t = theoretical or {}
 
-def demo_tandem(lam=1.0, mu1=1.5, mu2=1.25, horizon=20000.0, seed=7):
-    """
-    Two stations in series (M/M/1 -> M/M/1).  Demonstrates MODULARITY:
-    station 1 routes every finished entity into station 2 with one callback.
-    """
-    banner(f"TANDEM NETWORK   M/M/1 -> M/M/1   "
-           f"lambda={lam}  mu1={mu1}  mu2={mu2}")
-    rng = LCG(seed=seed)
-    sim = Simulator()
-    sim.trace_enabled = False        # network run is long; keep trace silent
+    print(f"\n[Node-level: {node_name}]")
+    row("c (servers)",   s["num_servers"],  fmt="{}")
+    row("N (capacity)",  s["sys_capacity"] if s["sys_capacity"] is not None else "inf", fmt="{}")
+    row("rho",           s["rho"],          t.get("rho"))
+    row("Lq",            s["Lq"],           t.get("Lq"))
+    row("L",             s["L"],            t.get("L"))
+    row("Wq (stage)",    s["Wq"],           t.get("Wq"))
+    row("W  (stage)",    s["W"],            t.get("W"))
+    row("Arrivals",      s["total_arrivals"], fmt="{}")
+    row("Served",        s["total_served"],   fmt="{}")
+    row("Lost (blocked)",s["total_lost"],     fmt="{}")
 
-    s2 = Station("Q2", sim, Distribution("M", 1.0 / mu2, rng), c=1)
-    s1 = Station("Q1", sim, Distribution("M", 1.0 / mu1, rng), c=1,
-                 router=lambda ent: s2)          # <-- connect Q1 to Q2
-    src = Source("SRC", sim, Distribution("M", 1.0 / lam, rng), s1)
-
-    src.start()
-    sim.run(until=horizon)
-    s1.finalize(); s2.finalize()
-
-    for st, mu in ((s1, mu1), (s2, mu2)):
-        emp = st.report(horizon)
-        th = theory("M", "M", 1, lam, mu)
-        print(f"\n[{st.name}]  mu={mu}")
-        print(f"  rho  sim={emp['rho']:.4f}  th={th['rho']:.4f}")
-        print(f"  L    sim={emp['L']:.4f}  th={th['L']:.4f}")
-        print(f"  W    sim={emp['W']:.4f}  th={th['W']:.4f}")
+    if overall and o is not None:
+        print(f"\n[System-wide]")
+        row("Simulation time", o["simulation_time"], fmt="{:.2f}")
+        row("Customers served", o["n_customers_served"], fmt="{}")
+        row("Wq (overall)", o["Wq"], t.get("Wq_overall"))
+        row("W  (overall)", o["W"],  t.get("W_overall"))
 
 
 if __name__ == "__main__":
-    # Reference scenario, shared with the GPSS model:
-    #   lambda = 1.0   mu = 1.25   ->  rho = 0.8
-    #   theory: L=4, Lq=3.2, W=4, Wq=3.2
-    demo_single(A="M", S="M", c=1, lam=1.0, mu=1.25)
+    # --- Example 1: single M/M/1 queue, lambda=0.8, mu=1.0 (rho = 0.8) ---
+    node = QueueNode(
+        id=1,
+        name="M/M/1",
+        arrival_rate=0.8,
+        service_rate=1.0,
+        arrival_distribution=DistributionArrivalTimes.M,
+        service_distribution=DistributionServiceTimes.M,
+        num_servers=1,
+        sys_capacity=None,
+        queue_discipline=QueueDiscipline.FIFO,
+    )
 
-    # finite capacity, multi-server, and a non-FIFO discipline
-    demo_single(A="M", S="M", c=1, N=5, lam=1.0, mu=1.25, trace_first_n=0)
-    demo_single(A="M", S="M", c=2, lam=1.5, mu=1.0, trace_first_n=0)
-    demo_single(A="M", S="M", c=1, D="LIFO", lam=1.0, mu=1.25, trace_first_n=0)
+    sim = Simulation(nodes=[node])
+    sim.run(until=10000)
+    stats = sim.final_statistics()
 
-    # modular multi-stage network
-    demo_tandem()
+    # M/M/1 closed-form formulas
+    lam, mu = node.arrival_rate, node.service_rate
+    rho_theo = lam / mu
+    Lq_theo = rho_theo**2 / (1 - rho_theo)
+    L_theo = rho_theo / (1 - rho_theo)
+    Wq_theo = Lq_theo / lam
+    W_theo = L_theo / lam
+
+    print_comparison(
+        stats,
+        node_name="M/M/1",
+        theoretical={
+            "rho": rho_theo, "Lq": Lq_theo, "L": L_theo,
+            "Wq": Wq_theo,   "W":  W_theo,
+            "Wq_overall": Wq_theo, "W_overall": W_theo,  # same as stage for 1-node system
+        },
+        title="Example 1: single M/M/1 queue (lambda=0.8, mu=1.0)",
+    )
+
+    # --- Example 2: tandem queue (multi-stage), node1 -> node2 ---
+    node1 = QueueNode(
+        id=1, name="Station_1",
+        arrival_rate=0.8, service_rate=1.0,
+        arrival_distribution=DistributionArrivalTimes.M,
+        service_distribution=DistributionServiceTimes.M,
+        num_servers=1, sys_capacity=None,
+        queue_discipline=QueueDiscipline.FIFO,
+        is_source=True,
+    )
+    node2 = QueueNode(
+        id=2, name="Station_2",
+        arrival_rate=0.0, service_rate=1.2,
+        arrival_distribution=DistributionArrivalTimes.M,
+        service_distribution=DistributionServiceTimes.M,
+        num_servers=1, sys_capacity=5,
+        queue_discipline=QueueDiscipline.FIFO,
+        is_source=False,
+    )
+    node1.next_node = node2
+
+    sim2 = Simulation(nodes=[node1, node2])
+    sim2.run(until=10000)
+    stats2 = sim2.final_statistics()
+
+    # Theoretical reference for Station_1: pure M/M/1 with lam=0.8, mu=1.0
+    # For Station_2: arrivals are the departures of Station_1, which for an
+    # OPEN tandem M/M/1 network (Jackson's theorem) are Poisson(lam=0.8).
+    # But Station_2 has finite capacity N=5 -> blocking, so the closed-form
+    # M/M/1 no longer applies exactly. We leave its theoretical column empty.
+    s1_theo = {
+        "rho": 0.8, "Lq": 0.8**2 / 0.2, "L": 0.8 / 0.2,
+        "Wq": (0.8**2 / 0.2) / 0.8, "W": (0.8 / 0.2) / 0.8,
+    }
+
+    print_comparison(
+        stats2, node_name="Station_1", theoretical=s1_theo, overall=False,
+        title="\nExample 2: tandem queue - Station_1 (M/M/1, infinite capacity)",
+    )
+    print_comparison(
+        stats2, node_name="Station_2", theoretical=None, overall=True,
+        title="\nExample 2: tandem queue - Station_2 (M/M/1/5, no closed-form due to blocking)",
+    )
