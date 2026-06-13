@@ -1,170 +1,299 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
-                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
-                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
-                  id="Definitions_Queue"
-                  targetNamespace="http://example.org/queue">
-
-  <!-- ====================================================================
-       Process model of ONE A/S/c/N/D queueing station.
-       The flowing token = a customer (a transaction / entity).
-       Maps onto queue_sim.py:
-         StartEvent  -> Source.generate (arrival process A)
-         Gateway_Cap -> Station.capacity (N) check
-         Gateway_Srv -> free-server (c) check
-         Task_Wait   -> enqueue under discipline D
-         Task_Serve  -> service (distribution S)
-         Gateway_Rte -> router callback (modularity / multi-stage)
-       ==================================================================== -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_Queue" targetNamespace="http://example.org/queue" exporter="Camunda Modeler" exporterVersion="5.45.0">
+  <bpmn:collaboration id="Collaboration_1rqrplq">
+    <bpmn:participant id="Participant_0i1g7fo" name="Lane: Station_1" processRef="Process_QueueStation" />
+    <bpmn:participant id="Participant_0fx5zrn" name="Lane: Station_2" processRef="Process_0iwjgtv" />
+    <bpmn:participant id="Participant_11s0i59" name="Lane: Station_n" processRef="Process_0lc7r93" />
+    <bpmn:messageFlow id="Flow_1c48av2" name="route_to_next (instant/with delay" sourceRef="Event_13it69h" targetRef="Event_01tgtop" />
+    <bpmn:messageFlow id="Flow_0h9hfix" name="route_to_next (instant/with delay" sourceRef="Event_14lnh7f" targetRef="Event_1m6huny" />
+  </bpmn:collaboration>
   <bpmn:process id="Process_QueueStation" name="Queueing station A/S/c/N/D" isExecutable="false">
-
-    <bpmn:startEvent id="Start_Arrive" name="Customer arrives (A)">
-      <bpmn:outgoing>F_start_cap</bpmn:outgoing>
+    <bpmn:startEvent id="Event_1xldd91" name="Arrival&#10;A=M">
+      <bpmn:outgoing>Flow_1gbk0tl</bpmn:outgoing>
     </bpmn:startEvent>
-
-    <bpmn:exclusiveGateway id="GW_Cap" name="Capacity N reached?">
-      <bpmn:incoming>F_start_cap</bpmn:incoming>
-      <bpmn:outgoing>F_cap_reject</bpmn:outgoing>
-      <bpmn:outgoing>F_cap_srv</bpmn:outgoing>
+    <bpmn:exclusiveGateway id="Gateway_1r7tz5f" name="Capacity?">
+      <bpmn:incoming>Flow_1gbk0tl</bpmn:incoming>
+      <bpmn:outgoing>Flow_0xvdcbo</bpmn:outgoing>
+      <bpmn:outgoing>Flow_1gnp2f9</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-
-    <bpmn:endEvent id="End_Reject" name="Customer lost (blocked)">
-      <bpmn:incoming>F_cap_reject</bpmn:incoming>
-    </bpmn:endEvent>
-
-    <bpmn:exclusiveGateway id="GW_Srv" name="Server free? (c servers)">
-      <bpmn:incoming>F_cap_srv</bpmn:incoming>
-      <bpmn:outgoing>F_srv_serve</bpmn:outgoing>
-      <bpmn:outgoing>F_srv_wait</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
-
-    <bpmn:task id="Task_Wait" name="Wait in queue (discipline D)">
-      <bpmn:incoming>F_srv_wait</bpmn:incoming>
-      <bpmn:outgoing>F_wait_serve</bpmn:outgoing>
+    <bpmn:task id="Activity_083d8vy" name="Wait in queue&#10;(D=FIFO)">
+      <bpmn:incoming>Flow_0xvdcbo</bpmn:incoming>
+      <bpmn:outgoing>Flow_1d80yo9</bpmn:outgoing>
     </bpmn:task>
-
-    <bpmn:task id="Task_Serve" name="Service (distribution S)">
-      <bpmn:incoming>F_srv_serve</bpmn:incoming>
-      <bpmn:incoming>F_wait_serve</bpmn:incoming>
-      <bpmn:outgoing>F_serve_rte</bpmn:outgoing>
+    <bpmn:task id="Activity_1va9mem" name="Serve (c=1)&#10;S=Exp(μ)">
+      <bpmn:incoming>Flow_1d80yo9</bpmn:incoming>
+      <bpmn:outgoing>Flow_16tp1qs</bpmn:outgoing>
     </bpmn:task>
-
-    <bpmn:exclusiveGateway id="GW_Rte" name="More stages?">
-      <bpmn:incoming>F_serve_rte</bpmn:incoming>
-      <bpmn:outgoing>F_rte_next</bpmn:outgoing>
-      <bpmn:outgoing>F_rte_depart</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
-
-    <!-- call activity = the modular hand-off to a downstream station -->
-    <bpmn:callActivity id="Task_Route" name="Route to next station">
-      <bpmn:incoming>F_rte_next</bpmn:incoming>
-      <bpmn:outgoing>F_next_depart</bpmn:outgoing>
-    </bpmn:callActivity>
-
-    <bpmn:endEvent id="End_Depart" name="Customer departs">
-      <bpmn:incoming>F_rte_depart</bpmn:incoming>
-      <bpmn:incoming>F_next_depart</bpmn:incoming>
+    <bpmn:sequenceFlow id="Flow_1gbk0tl" sourceRef="Event_1xldd91" targetRef="Gateway_1r7tz5f" />
+    <bpmn:sequenceFlow id="Flow_0xvdcbo" sourceRef="Gateway_1r7tz5f" targetRef="Activity_083d8vy" />
+    <bpmn:sequenceFlow id="Flow_1d80yo9" sourceRef="Activity_083d8vy" targetRef="Activity_1va9mem" />
+    <bpmn:intermediateThrowEvent id="Event_13it69h" name="End service Station_1">
+      <bpmn:incoming>Flow_16tp1qs</bpmn:incoming>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="Flow_16tp1qs" sourceRef="Activity_1va9mem" targetRef="Event_13it69h" />
+    <bpmn:sequenceFlow id="Flow_1gnp2f9" name="No (capacity reached)" sourceRef="Gateway_1r7tz5f" targetRef="Event_05xmppo" />
+    <bpmn:endEvent id="Event_05xmppo" name="Customer Lost">
+      <bpmn:incoming>Flow_1gnp2f9</bpmn:incoming>
     </bpmn:endEvent>
-
-    <!-- sequence flows -->
-    <bpmn:sequenceFlow id="F_start_cap"   sourceRef="Start_Arrive" targetRef="GW_Cap"/>
-    <bpmn:sequenceFlow id="F_cap_reject"  name="system full"   sourceRef="GW_Cap" targetRef="End_Reject"/>
-    <bpmn:sequenceFlow id="F_cap_srv"     name="space free"    sourceRef="GW_Cap" targetRef="GW_Srv"/>
-    <bpmn:sequenceFlow id="F_srv_serve"   name="server free"   sourceRef="GW_Srv" targetRef="Task_Serve"/>
-    <bpmn:sequenceFlow id="F_srv_wait"    name="all busy"      sourceRef="GW_Srv" targetRef="Task_Wait"/>
-    <bpmn:sequenceFlow id="F_wait_serve"  name="server frees"  sourceRef="Task_Wait" targetRef="Task_Serve"/>
-    <bpmn:sequenceFlow id="F_serve_rte"   sourceRef="Task_Serve" targetRef="GW_Rte"/>
-    <bpmn:sequenceFlow id="F_rte_next"    name="yes"           sourceRef="GW_Rte" targetRef="Task_Route"/>
-    <bpmn:sequenceFlow id="F_rte_depart"  name="no"            sourceRef="GW_Rte" targetRef="End_Depart"/>
-    <bpmn:sequenceFlow id="F_next_depart" sourceRef="Task_Route" targetRef="End_Depart"/>
-
   </bpmn:process>
-
-  <!-- ============================ DIAGRAM ============================ -->
+  <bpmn:process id="Process_0iwjgtv" name="Queueing station A/S/c/N/D" isExecutable="false">
+    <bpmn:startEvent id="Event_01tgtop" name="Arrival (from Station_1)&#10;A=D">
+      <bpmn:outgoing>Flow_17amsa0</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:exclusiveGateway id="Gateway_0xcy4ex" name="Capacity? (N=5)">
+      <bpmn:incoming>Flow_17amsa0</bpmn:incoming>
+      <bpmn:outgoing>Flow_1fkcvzv</bpmn:outgoing>
+      <bpmn:outgoing>Flow_0nvrhbk</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Activity_0cnfn22" name="Wait in queue&#10;(D=LIFO)">
+      <bpmn:incoming>Flow_1fkcvzv</bpmn:incoming>
+      <bpmn:outgoing>Flow_0v7eqv2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Activity_1mkhmcu" name="Serve (c=2)&#10;S=Exp(μ)">
+      <bpmn:incoming>Flow_0v7eqv2</bpmn:incoming>
+      <bpmn:outgoing>Flow_0mrgspb</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:intermediateThrowEvent id="Event_14lnh7f" name="End service&#10;Station_2">
+      <bpmn:incoming>Flow_0mrgspb</bpmn:incoming>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="Flow_17amsa0" sourceRef="Event_01tgtop" targetRef="Gateway_0xcy4ex" />
+    <bpmn:sequenceFlow id="Flow_1fkcvzv" sourceRef="Gateway_0xcy4ex" targetRef="Activity_0cnfn22" />
+    <bpmn:sequenceFlow id="Flow_0v7eqv2" sourceRef="Activity_0cnfn22" targetRef="Activity_1mkhmcu" />
+    <bpmn:sequenceFlow id="Flow_0mrgspb" sourceRef="Activity_1mkhmcu" targetRef="Event_14lnh7f" />
+    <bpmn:endEvent id="Event_1gjux2m" name="Customer Lost">
+      <bpmn:incoming>Flow_0nvrhbk</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_0nvrhbk" name="No (blocked)" sourceRef="Gateway_0xcy4ex" targetRef="Event_1gjux2m" />
+  </bpmn:process>
+  <bpmn:process id="Process_0lc7r93" name="Queueing station A/S/c/N/D" isExecutable="false">
+    <bpmn:startEvent id="Event_1m6huny" name="Arrival (from Station_2)&#10;A=M/D/G">
+      <bpmn:outgoing>Flow_0xnp0eo</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:exclusiveGateway id="Gateway_0f5f80r" name="Capacity? (N=n)">
+      <bpmn:incoming>Flow_0xnp0eo</bpmn:incoming>
+      <bpmn:outgoing>Flow_0wsl0f5</bpmn:outgoing>
+      <bpmn:outgoing>Flow_03jdz5f</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Activity_03fdbru" name="Wait in queue&#10;(D=FIFO/LIFO/SIRO)">
+      <bpmn:incoming>Flow_0wsl0f5</bpmn:incoming>
+      <bpmn:outgoing>Flow_11gdmiy</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Activity_1rwe99i" name="Serve (c=C)&#10;S=Exp(μ)/&#10;Deterministic/&#10;General">
+      <bpmn:incoming>Flow_11gdmiy</bpmn:incoming>
+      <bpmn:outgoing>Flow_164g7mj</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="Event_0au7pvm" name="Customer Lost">
+      <bpmn:incoming>Flow_03jdz5f</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_0xnp0eo" sourceRef="Event_1m6huny" targetRef="Gateway_0f5f80r" />
+    <bpmn:sequenceFlow id="Flow_0wsl0f5" sourceRef="Gateway_0f5f80r" targetRef="Activity_03fdbru" />
+    <bpmn:sequenceFlow id="Flow_03jdz5f" name="No (blocked)" sourceRef="Gateway_0f5f80r" targetRef="Event_0au7pvm" />
+    <bpmn:sequenceFlow id="Flow_11gdmiy" sourceRef="Activity_03fdbru" targetRef="Activity_1rwe99i" />
+    <bpmn:endEvent id="Event_0p2pkoq" name="Exit system">
+      <bpmn:incoming>Flow_164g7mj</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_164g7mj" sourceRef="Activity_1rwe99i" targetRef="Event_0p2pkoq" />
+  </bpmn:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_QueueStation">
-
-      <bpmndi:BPMNShape id="di_Start" bpmnElement="Start_Arrive">
-        <dc:Bounds x="160" y="200" width="36" height="36"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="138" y="243" width="82" height="27"/></bpmndi:BPMNLabel>
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1rqrplq">
+      <bpmndi:BPMNShape id="Participant_0i1g7fo_di" bpmnElement="Participant_0i1g7fo" isHorizontal="true">
+        <dc:Bounds x="160" y="85" width="780" height="313" />
+        <bpmndi:BPMNLabel />
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_GWCap" bpmnElement="GW_Cap" isMarkerVisible="true">
-        <dc:Bounds x="260" y="193" width="50" height="50"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="248" y="160" width="74" height="27"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Event_1xldd91_di" bpmnElement="Event_1xldd91">
+        <dc:Bounds x="212" y="192" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="214" y="235" width="32" height="27" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_Reject" bpmnElement="End_Reject">
-        <dc:Bounds x="267" y="80" width="36" height="36"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="246" y="56" width="78" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Gateway_1r7tz5f_di" bpmnElement="Gateway_1r7tz5f" isMarkerVisible="true">
+        <dc:Bounds x="315" y="185" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="315" y="245" width="49" height="14" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_GWSrv" bpmnElement="GW_Srv" isMarkerVisible="true">
-        <dc:Bounds x="380" y="193" width="50" height="50"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="366" y="160" width="78" height="27"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Activity_083d8vy_di" bpmnElement="Activity_083d8vy">
+        <dc:Bounds x="450" y="170" width="100" height="80" />
+        <bpmndi:BPMNLabel />
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_Wait" bpmnElement="Task_Wait">
-        <dc:Bounds x="355" y="320" width="100" height="80"/>
+      <bpmndi:BPMNShape id="Activity_1va9mem_di" bpmnElement="Activity_1va9mem">
+        <dc:Bounds x="640" y="170" width="100" height="80" />
+        <bpmndi:BPMNLabel />
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_Serve" bpmnElement="Task_Serve">
-        <dc:Bounds x="520" y="178" width="100" height="80"/>
+      <bpmndi:BPMNShape id="Event_13it69h_di" bpmnElement="Event_13it69h">
+        <dc:Bounds x="832" y="192" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="821" y="156" width="58" height="27" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_GWRte" bpmnElement="GW_Rte" isMarkerVisible="true">
-        <dc:Bounds x="690" y="193" width="50" height="50"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="684" y="160" width="62" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="Event_05xmppo_di" bpmnElement="Event_05xmppo">
+        <dc:Bounds x="562" y="102" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="544" y="145" width="72" height="14" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_Route" bpmnElement="Task_Route">
-        <dc:Bounds x="665" y="320" width="100" height="80"/>
+      <bpmndi:BPMNEdge id="Flow_1gbk0tl_di" bpmnElement="Flow_1gbk0tl">
+        <di:waypoint x="248" y="210" />
+        <di:waypoint x="315" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0xvdcbo_di" bpmnElement="Flow_0xvdcbo">
+        <di:waypoint x="365" y="210" />
+        <di:waypoint x="450" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1d80yo9_di" bpmnElement="Flow_1d80yo9">
+        <di:waypoint x="550" y="210" />
+        <di:waypoint x="640" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_16tp1qs_di" bpmnElement="Flow_16tp1qs">
+        <di:waypoint x="740" y="210" />
+        <di:waypoint x="832" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1gnp2f9_di" bpmnElement="Flow_1gnp2f9">
+        <di:waypoint x="340" y="185" />
+        <di:waypoint x="340" y="120" />
+        <di:waypoint x="562" y="120" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="269" y="116" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="BPMNShape_04pbhej" bpmnElement="Participant_0fx5zrn" isHorizontal="true">
+        <dc:Bounds x="160" y="340" width="780" height="310" />
+        <bpmndi:BPMNLabel />
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNShape id="di_Depart" bpmnElement="End_Depart">
-        <dc:Bounds x="830" y="200" width="36" height="36"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="812" y="243" width="72" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="BPMNShape_1a538rn" bpmnElement="Event_01tgtop">
+        <dc:Bounds x="213" y="500" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="201" y="543" width="60" height="40" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
-
-      <bpmndi:BPMNEdge id="di_F_start_cap" bpmnElement="F_start_cap">
-        <di:waypoint x="196" y="218"/><di:waypoint x="260" y="218"/>
+      <bpmndi:BPMNShape id="BPMNShape_14ncb6d" bpmnElement="Gateway_0xcy4ex" isMarkerVisible="true">
+        <dc:Bounds x="316" y="493" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="302" y="550" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1g74ttk" bpmnElement="Activity_0cnfn22">
+        <dc:Bounds x="451" y="478" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_0cht75x" bpmnElement="Activity_1mkhmcu">
+        <dc:Bounds x="641" y="478" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1aecu4g" bpmnElement="Event_14lnh7f">
+        <dc:Bounds x="833" y="500" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="821" y="466" width="58" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1uu8dv7" bpmnElement="Event_1gjux2m">
+        <dc:Bounds x="562" y="412" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="544" y="455" width="72" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="BPMNEdge_1onzz3v" bpmnElement="Flow_17amsa0">
+        <di:waypoint x="249" y="518" />
+        <di:waypoint x="316" y="518" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_cap_reject" bpmnElement="F_cap_reject">
-        <di:waypoint x="285" y="193"/><di:waypoint x="285" y="116"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="291" y="150" width="56" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="BPMNEdge_0dqyf0e" bpmnElement="Flow_1fkcvzv">
+        <di:waypoint x="366" y="518" />
+        <di:waypoint x="451" y="518" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_cap_srv" bpmnElement="F_cap_srv">
-        <di:waypoint x="310" y="218"/><di:waypoint x="380" y="218"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="322" y="200" width="48" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="BPMNEdge_00owxyp" bpmnElement="Flow_0v7eqv2">
+        <di:waypoint x="551" y="518" />
+        <di:waypoint x="641" y="518" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_srv_serve" bpmnElement="F_srv_serve">
-        <di:waypoint x="430" y="218"/><di:waypoint x="520" y="218"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="445" y="200" width="56" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="BPMNEdge_1wzi4eh" bpmnElement="Flow_0mrgspb">
+        <di:waypoint x="741" y="518" />
+        <di:waypoint x="833" y="518" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_srv_wait" bpmnElement="F_srv_wait">
-        <di:waypoint x="405" y="243"/><di:waypoint x="405" y="320"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="411" y="270" width="44" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="Flow_0nvrhbk_di" bpmnElement="Flow_0nvrhbk">
+        <di:waypoint x="341" y="493" />
+        <di:waypoint x="341" y="430" />
+        <di:waypoint x="562" y="430" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="298" y="413" width="63" height="14" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_wait_serve" bpmnElement="F_wait_serve">
-        <di:waypoint x="455" y="360"/><di:waypoint x="570" y="360"/><di:waypoint x="570" y="258"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="480" y="342" width="70" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNShape id="BPMNShape_0hbxkkx" bpmnElement="Participant_11s0i59" isHorizontal="true">
+        <dc:Bounds x="160" y="650" width="780" height="310" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_01k9t48" bpmnElement="Event_1m6huny">
+        <dc:Bounds x="213" y="810" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="201" y="853" width="60" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_0pbbpom" bpmnElement="Gateway_0f5f80r" isMarkerVisible="true">
+        <dc:Bounds x="316" y="803" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="302" y="860" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1jhgl9h" bpmnElement="Activity_03fdbru">
+        <dc:Bounds x="451" y="788" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_1u84shb" bpmnElement="Activity_1rwe99i">
+        <dc:Bounds x="641" y="788" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BPMNShape_05rrck8" bpmnElement="Event_0au7pvm">
+        <dc:Bounds x="562" y="722" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="544" y="765" width="72" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0p2pkoq_di" bpmnElement="Event_0p2pkoq">
+        <dc:Bounds x="882" y="810" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="872" y="853" width="57" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="BPMNEdge_0i74b8c" bpmnElement="Flow_0xnp0eo">
+        <di:waypoint x="249" y="828" />
+        <di:waypoint x="316" y="828" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_serve_rte" bpmnElement="F_serve_rte">
-        <di:waypoint x="620" y="218"/><di:waypoint x="690" y="218"/>
+      <bpmndi:BPMNEdge id="BPMNEdge_00lcd95" bpmnElement="Flow_0wsl0f5">
+        <di:waypoint x="366" y="828" />
+        <di:waypoint x="451" y="828" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_rte_next" bpmnElement="F_rte_next">
-        <di:waypoint x="715" y="243"/><di:waypoint x="715" y="320"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="721" y="270" width="20" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="BPMNEdge_0xgbvlu" bpmnElement="Flow_03jdz5f">
+        <di:waypoint x="341" y="803" />
+        <di:waypoint x="341" y="740" />
+        <di:waypoint x="562" y="740" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="298" y="723" width="63" height="14" />
+        </bpmndi:BPMNLabel>
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_rte_depart" bpmnElement="F_rte_depart">
-        <di:waypoint x="740" y="218"/><di:waypoint x="830" y="218"/>
-        <bpmndi:BPMNLabel><dc:Bounds x="778" y="200" width="16" height="14"/></bpmndi:BPMNLabel>
+      <bpmndi:BPMNEdge id="BPMNEdge_1mgffzb" bpmnElement="Flow_11gdmiy">
+        <di:waypoint x="551" y="828" />
+        <di:waypoint x="641" y="828" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="di_F_next_depart" bpmnElement="F_next_depart">
-        <di:waypoint x="765" y="360"/><di:waypoint x="848" y="360"/><di:waypoint x="848" y="236"/>
+      <bpmndi:BPMNEdge id="Flow_164g7mj_di" bpmnElement="Flow_164g7mj">
+        <di:waypoint x="741" y="828" />
+        <di:waypoint x="882" y="828" />
       </bpmndi:BPMNEdge>
-
+      <bpmndi:BPMNEdge id="Flow_1c48av2_di" bpmnElement="Flow_1c48av2">
+        <di:waypoint x="850" y="228" />
+        <di:waypoint x="850" y="390" />
+        <di:waypoint x="231" y="390" />
+        <di:waypoint x="231" y="500" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="505" y="356" width="89" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0h9hfix_di" bpmnElement="Flow_0h9hfix">
+        <di:waypoint x="851" y="536" />
+        <di:waypoint x="851" y="690" />
+        <di:waypoint x="231" y="690" />
+        <di:waypoint x="231" y="810" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="505" y="656" width="89" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>
