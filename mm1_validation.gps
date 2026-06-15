@@ -3,66 +3,31 @@
 * ---------------------------------------------------------------------------
 * Independent validation model for the Python event-scheduling simulator.
 *
-* Reference scenario (must match demo_single in queue_sim.py):
-*       arrival rate  lambda = 1.00   (mean interarrival 1.00)
-*       service rate  mu     = 1.25   (mean service      0.80)
-*       servers       c      = 1
-*       => utilization rho = lambda/mu = 0.80
-*
-* Closed-form theory to check against:
-*       rho = 0.80 | L = 4.0 | Lq = 3.2 | W = 4.0 | Wq = 3.2
-*
-* GPSS uses a DIFFERENT random engine and a DIFFERENT modelling paradigm
-* (transaction flow) than the Python next-event engine, so agreement of the
-* aggregate measures is strong evidence both models are correct.
-* ===========================================================================
+* ---- 1. TABELLA DI QUANTILI PER LA DISTRIBUZIONE ESPONENZIALE ----
+EXPON    FUNCTION  RN1,C24
+0,0/.1,.104/.2,.222/.3,.356/.4,.509/.5,.693/.6,.916/.7,1.2/.75,1.38
+.8,1.6/.84,1.83/.88,2.12/.9,2.3/.92,2.52/.94,2.81/.95,2.99/.96,3.2
+.97,3.5/.98,3.9/.99,4.6/.995,5.3/.998,6.2/.999,7/.9998,8
 
-* ----- two GPSS "Queue" entities are used purely as measurement probes ------
-*   SYSTEM : spans the whole sojourn  -> avg contents = L , avg time = W
-*   LINE   : spans the waiting only   -> avg contents = Lq, avg time = Wq
-* ---------------------------------------------------------------------------
+* ---- 2. ALLOCAZIONE RISORSE ----
+SERVERS  STORAGE   1
 
-         GENERATE   (Exponential(1,0,1.0))   ; external arrivals, mean 1.0
-         QUEUE      SYSTEM                    ; enter system  (start L/W clock)
-         QUEUE      LINE                      ; enter waiting line (start Lq/Wq)
-         SEIZE      SERVER                    ; grab the single server
-         DEPART     LINE                      ; leave the line (stop Wq clock)
-         ADVANCE    (Exponential(2,0,0.8))    ; service time, mean 0.8 = 1/mu
-         RELEASE    SERVER                     ; free the server
-         DEPART     SYSTEM                     ; leave system (stop W clock)
-         TERMINATE                             ; (no count decrement)
+         SIMULATE
 
-* ----- run-length control: a timer transaction ends the run ----------------
-         GENERATE   20000                      ; one timer arrives at t=20000
-         TERMINATE  1                          ; decrements termination counter
+* ---- 3. DINAMICA DELLE TRANSAZIONI ---------------------------------------
+* IAT: lambda = 0.8 -> Media = 1.25. Uso il modificatore di funzione FN$EXPON
+         GENERATE  1.25,FN$EXPON
+         QUEUE     SYSTEM
+         QUEUE     WAIT
+         ENTER     SERVERS
+         DEPART    WAIT
+* ST: mu = 1.0 -> Media = 1.0
+         ADVANCE   1.0,FN$EXPON
+         LEAVE     SERVERS
+         DEPART    SYSTEM
+         TERMINATE
 
-         START      1                          ; run until counter hits 0
-
-* ===========================================================================
-* HOW TO READ THE STANDARD REPORT
-* ---------------------------------------------------------------------------
-*   FACILITY  SERVER   -> "UTIL." column          ......  rho   (expect 0.80)
-*   QUEUE     SYSTEM   -> "AVE.CONT." = L (~4.0), "AVE.TIME" = W  (~4.0)
-*   QUEUE     LINE     -> "AVE.CONT." = Lq (~3.2),"AVE.TIME" = Wq (~3.2)
-*
-* The same SNAs are available programmatically, e.g.
-*   QM$SYSTEM (max contents), QA$LINE (avg contents), QT$LINE (avg time).
-* ===========================================================================
-
-* ---------------------------------------------------------------------------
-* OPTIONAL: TRACE VALIDATION
-* ---------------------------------------------------------------------------
-* To diff GPSS behaviour against the Python TRACE, shorten the run and turn on
-* transaction tracing. Replace the run block above with a small batch:
-*
-*         GENERATE   (Exponential(1,0,1.0)),,,25   ; only 25 customers
-*         TRACE                                     ; log every block move
-*         QUEUE      SYSTEM
-*         ...
-*         TERMINATE  1
-*         START      25
-*
-* GPSS then prints, for every transaction, the clock time and the block it
-* enters -- which lines up event-for-event with the ARRIVE / SERVICE / DEPART
-* lines emitted by queue_sim.py for the same first arrivals.
-* ===========================================================================
+* ---- 4. CONTROLLO TEMPO DI RUN -------------------------------------------
+         GENERATE  50000
+         TERMINATE 1
+         START     1
