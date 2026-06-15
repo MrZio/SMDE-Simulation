@@ -48,7 +48,7 @@ class QueueNode(BaseModel):
     next_node: 'QueueNode | None' = None
     is_source: bool = True                          # False = receives entities only via routing
 
-    waiting_queue: list[entity] = []
+    waiting_queue: list[Entity] = []
     busy_servers: int = 0
 
     # --- bookkeeping for statistics (area-under-curve method) ---
@@ -217,7 +217,7 @@ class Simulation(BaseModel):
                 "Lq": Lq,                           # avg number of entities waiting
                 "L": L,                             # avg number of entities in system
                 "rho": rho,                         # server utilization
-                "sys_capacity": node.sys_capacity,  # N (Kendall) - None = infinite
+                "sys_capacity": node.sys_capacity,  # N (Kendall) None is infinite
                 "num_servers": node.num_servers,    # c (Kendall)
                 "total_arrivals": node.total_arrivals,
                 "total_served": node.total_served,
