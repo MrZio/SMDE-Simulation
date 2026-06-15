@@ -1,0 +1,515 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" id="Definitions_QueueMesh" targetNamespace="http://example.org/queue" exporter="Camunda Modeler" exporterVersion="5.45.0">
+  <bpmn:collaboration id="Collaboration_Mesh">
+    <bpmn:participant id="Participant_S1" name="Lane: Station_1 (A/S/c/N/D)" processRef="Process_S1" />
+    <bpmn:participant id="Participant_S2" name="Lane: Station_2 (A/S/c/N/D)" processRef="Process_S2" />
+    <bpmn:participant id="Participant_S3" name="Lane: Station_3 (A/S/c/N/D)" processRef="Process_S3" />
+    <bpmn:messageFlow id="MFlow_S1_S2" name="route_to next in path (instant/with delay)" sourceRef="Event_End_S1" targetRef="Event_Recv_S2" />
+    <bpmn:messageFlow id="MFlow_S2_S3" name="route_to next in path (instant/with delay)" sourceRef="Event_End_S2" targetRef="Event_Recv_S3" />
+    <bpmn:messageFlow id="MFlow_S3_S1" name="route_to next in path (instant/with delay)" sourceRef="Event_End_S3" targetRef="Event_Recv_S1" />
+    <bpmn:textAnnotation id="TextAnnotation_AnyToAny">
+      <bpmn:text>Any station can route to any other station. Only representative flows are drawn (S1-&gt;S2, S2-&gt;S3, S3-&gt;S1); the actual successor is the next element of the entity's pre-sampled path.
+Representative routing shown. Any station can route to any other; the full path is a random permutation sampled at entity creation (Script Task).</bpmn:text>
+    </bpmn:textAnnotation>
+  </bpmn:collaboration>
+  <bpmn:process id="Process_S1" name="Queueing station A/S/c/N/D" isExecutable="false">
+    <bpmn:startEvent id="Event_Start_S1" name="External arrival&#10;A=M/D/G">
+      <bpmn:outgoing>Flow_S1_a</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:scriptTask id="Task_SamplePath_S1" name="Sample&#10;random path&#10;(permutation of stations)">
+      <bpmn:incoming>Flow_S1_a</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_b</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:exclusiveGateway id="Gateway_Cap_S1" name="Capacity?&#10;N=n || Infinite">
+      <bpmn:incoming>Flow_S1_b</bpmn:incoming>
+      <bpmn:incoming>Flow_S1_recv</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_ok</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S1_lost</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_Wait_S1" name="Wait in queue&#10;(D=FIFO/LIFO/SIRO)">
+      <bpmn:incoming>Flow_S1_ok</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_c</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_Serve_S1" name="Serve (c=C)&#10;S=Exp(mu)/Det/General">
+      <bpmn:incoming>Flow_S1_c</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_d</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Next_S1" name="More stations&#10;in path?">
+      <bpmn:incoming>Flow_S1_d</bpmn:incoming>
+      <bpmn:outgoing>Flow_S1_more</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S1_done</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="Event_End_S1" name="End service&#10;route to next">
+      <bpmn:incoming>Flow_S1_more</bpmn:incoming>
+      <bpmn:messageEventDefinition id="MsgThrow_S1" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="Event_Exit_S1" name="Exit system&#10;(path done)">
+      <bpmn:incoming>Flow_S1_done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="Event_Recv_S1" name="Routed arrival&#10;(from another station)">
+      <bpmn:outgoing>Flow_S1_recv</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MsgDef_S1" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="Event_Lost_S1" name="Entity lost">
+      <bpmn:incoming>Flow_S1_lost</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_S1_a" sourceRef="Event_Start_S1" targetRef="Task_SamplePath_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_b" sourceRef="Task_SamplePath_S1" targetRef="Gateway_Cap_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_recv" sourceRef="Event_Recv_S1" targetRef="Gateway_Cap_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_ok" sourceRef="Gateway_Cap_S1" targetRef="Task_Wait_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_lost" name="No (capacity reached)" sourceRef="Gateway_Cap_S1" targetRef="Event_Lost_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_c" sourceRef="Task_Wait_S1" targetRef="Task_Serve_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_d" sourceRef="Task_Serve_S1" targetRef="Gateway_Next_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_more" name="Yes" sourceRef="Gateway_Next_S1" targetRef="Event_End_S1" />
+    <bpmn:sequenceFlow id="Flow_S1_done" name="No" sourceRef="Gateway_Next_S1" targetRef="Event_Exit_S1" />
+  </bpmn:process>
+  <bpmn:process id="Process_S2" name="Queueing station A/S/c/N/D" isExecutable="false">
+    <bpmn:startEvent id="Event_Start_S2" name="External arrival&#10;A=M/D/G">
+      <bpmn:outgoing>Flow_S2_a</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:scriptTask id="Task_SamplePath_S2" name="Sample&#10;random path&#10;(permutation of stations)">
+      <bpmn:incoming>Flow_S2_a</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_b</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:exclusiveGateway id="Gateway_Cap_S2" name="Capacity?&#10;N=n || Infinite">
+      <bpmn:incoming>Flow_S2_b</bpmn:incoming>
+      <bpmn:incoming>Flow_S2_recv</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_ok</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S2_lost</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_Wait_S2" name="Wait in queue&#10;(D=FIFO/LIFO/SIRO)">
+      <bpmn:incoming>Flow_S2_ok</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_c</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_Serve_S2" name="Serve (c=C)&#10;S=Exp(mu)/Det/General">
+      <bpmn:incoming>Flow_S2_c</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_d</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Next_S2" name="More stations&#10;in path?">
+      <bpmn:incoming>Flow_S2_d</bpmn:incoming>
+      <bpmn:outgoing>Flow_S2_more</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S2_done</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="Event_End_S2" name="End service&#10;route to next">
+      <bpmn:incoming>Flow_S2_more</bpmn:incoming>
+      <bpmn:messageEventDefinition id="MsgThrow_S2" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="Event_Exit_S2" name="Exit system&#10;(path done)">
+      <bpmn:incoming>Flow_S2_done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="Event_Recv_S2" name="Routed arrival&#10;(from another station)">
+      <bpmn:outgoing>Flow_S2_recv</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MsgDef_S2" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="Event_Lost_S2" name="Entity lost">
+      <bpmn:incoming>Flow_S2_lost</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_S2_a" sourceRef="Event_Start_S2" targetRef="Task_SamplePath_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_b" sourceRef="Task_SamplePath_S2" targetRef="Gateway_Cap_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_recv" sourceRef="Event_Recv_S2" targetRef="Gateway_Cap_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_ok" sourceRef="Gateway_Cap_S2" targetRef="Task_Wait_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_lost" name="No (capacity reached)" sourceRef="Gateway_Cap_S2" targetRef="Event_Lost_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_c" sourceRef="Task_Wait_S2" targetRef="Task_Serve_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_d" sourceRef="Task_Serve_S2" targetRef="Gateway_Next_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_more" name="Yes" sourceRef="Gateway_Next_S2" targetRef="Event_End_S2" />
+    <bpmn:sequenceFlow id="Flow_S2_done" name="No" sourceRef="Gateway_Next_S2" targetRef="Event_Exit_S2" />
+  </bpmn:process>
+  <bpmn:process id="Process_S3" name="Queueing station A/S/c/N/D" isExecutable="false">
+    <bpmn:startEvent id="Event_Start_S3" name="External arrival&#10;A=M/D/G">
+      <bpmn:outgoing>Flow_S3_a</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:scriptTask id="Task_SamplePath_S3" name="Sample&#10; random path&#10;(permutation of stations)">
+      <bpmn:incoming>Flow_S3_a</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_b</bpmn:outgoing>
+    </bpmn:scriptTask>
+    <bpmn:exclusiveGateway id="Gateway_Cap_S3" name="Capacity?&#10;N=n || Infinite">
+      <bpmn:incoming>Flow_S3_b</bpmn:incoming>
+      <bpmn:incoming>Flow_S3_recv</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_ok</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S3_lost</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:task id="Task_Wait_S3" name="Wait in queue&#10;(D=FIFO/LIFO/SIRO)">
+      <bpmn:incoming>Flow_S3_ok</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_c</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:task id="Task_Serve_S3" name="Serve (c=C)&#10;S=Exp(mu)/Det/General">
+      <bpmn:incoming>Flow_S3_c</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_d</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:exclusiveGateway id="Gateway_Next_S3" name="More stations&#10;in path?">
+      <bpmn:incoming>Flow_S3_d</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3_more</bpmn:outgoing>
+      <bpmn:outgoing>Flow_S3_done</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="Event_End_S3" name="End service&#10;route to next">
+      <bpmn:incoming>Flow_S3_more</bpmn:incoming>
+      <bpmn:messageEventDefinition id="MsgThrow_S3" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="Event_Exit_S3" name="Exit system&#10;(path done)">
+      <bpmn:incoming>Flow_S3_done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="Event_Recv_S3" name="Routed arrival&#10;(from another station)">
+      <bpmn:outgoing>Flow_S3_recv</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MsgDef_S3" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="Event_Lost_S3" name="Entity lost">
+      <bpmn:incoming>Flow_S3_lost</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_S3_a" sourceRef="Event_Start_S3" targetRef="Task_SamplePath_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_b" sourceRef="Task_SamplePath_S3" targetRef="Gateway_Cap_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_recv" sourceRef="Event_Recv_S3" targetRef="Gateway_Cap_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_ok" sourceRef="Gateway_Cap_S3" targetRef="Task_Wait_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_lost" name="No (capacity reached)" sourceRef="Gateway_Cap_S3" targetRef="Event_Lost_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_c" sourceRef="Task_Wait_S3" targetRef="Task_Serve_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_d" sourceRef="Task_Serve_S3" targetRef="Gateway_Next_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_more" name="Yes" sourceRef="Gateway_Next_S3" targetRef="Event_End_S3" />
+    <bpmn:sequenceFlow id="Flow_S3_done" name="No" sourceRef="Gateway_Next_S3" targetRef="Event_Exit_S3" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_Mesh">
+      <bpmndi:BPMNShape id="Participant_S2_di" bpmnElement="Participant_S2" isHorizontal="true">
+        <dc:Bounds x="310" y="460" width="1010" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Start_S2_di" bpmnElement="Event_Start_S2">
+        <dc:Bounds x="372" y="522" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="354" y="565" width="74" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SamplePath_S2_di" bpmnElement="Task_SamplePath_S2">
+        <dc:Bounds x="450" y="500" width="110" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Cap_S2_di" bpmnElement="Gateway_Cap_S2" isMarkerVisible="true">
+        <dc:Bounds x="605" y="515" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="598" y="475" width="65" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Wait_S2_di" bpmnElement="Task_Wait_S2">
+        <dc:Bounds x="710" y="500" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Serve_S2_di" bpmnElement="Task_Serve_S2">
+        <dc:Bounds x="870" y="500" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Next_S2_di" bpmnElement="Gateway_Next_S2" isMarkerVisible="true">
+        <dc:Bounds x="1040" y="515" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1032" y="565" width="67" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_End_S2_di" bpmnElement="Event_End_S2">
+        <dc:Bounds x="1142" y="522" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1129" y="484.5" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Exit_S2_di" bpmnElement="Event_Exit_S2">
+        <dc:Bounds x="1242" y="522" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1233" y="565" width="57" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Recv_S2_di" bpmnElement="Event_Recv_S2">
+        <dc:Bounds x="762" y="612" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="815" y="620" width="69" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Lost_S2_di" bpmnElement="Event_Lost_S2">
+        <dc:Bounds x="452" y="612" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="446" y="651" width="48" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_S2_a_di" bpmnElement="Flow_S2_a">
+        <di:waypoint x="408" y="540" />
+        <di:waypoint x="450" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_b_di" bpmnElement="Flow_S2_b">
+        <di:waypoint x="560" y="540" />
+        <di:waypoint x="605" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_recv_di" bpmnElement="Flow_S2_recv">
+        <di:waypoint x="762" y="630" />
+        <di:waypoint x="630" y="630" />
+        <di:waypoint x="630" y="565" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_ok_di" bpmnElement="Flow_S2_ok">
+        <di:waypoint x="655" y="540" />
+        <di:waypoint x="710" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_lost_di" bpmnElement="Flow_S2_lost">
+        <di:waypoint x="630" y="565" />
+        <di:waypoint x="630" y="640" />
+        <di:waypoint x="485" y="640" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="528" y="646" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_c_di" bpmnElement="Flow_S2_c">
+        <di:waypoint x="820" y="540" />
+        <di:waypoint x="870" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_d_di" bpmnElement="Flow_S2_d">
+        <di:waypoint x="990" y="540" />
+        <di:waypoint x="1040" y="540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_more_di" bpmnElement="Flow_S2_more">
+        <di:waypoint x="1090" y="540" />
+        <di:waypoint x="1142" y="540" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1109" y="522" width="19" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S2_done_di" bpmnElement="Flow_S2_done">
+        <di:waypoint x="1178" y="540" />
+        <di:waypoint x="1242" y="540" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1203" y="522" width="15" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_S1_di" bpmnElement="Participant_S1" isHorizontal="true">
+        <dc:Bounds x="310" y="140" width="1010" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Start_S1_di" bpmnElement="Event_Start_S1">
+        <dc:Bounds x="372" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="354" y="245" width="74" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SamplePath_S1_di" bpmnElement="Task_SamplePath_S1">
+        <dc:Bounds x="450" y="180" width="110" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Cap_S1_di" bpmnElement="Gateway_Cap_S1" isMarkerVisible="true">
+        <dc:Bounds x="605" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="598" y="155" width="65" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Wait_S1_di" bpmnElement="Task_Wait_S1">
+        <dc:Bounds x="710" y="180" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Serve_S1_di" bpmnElement="Task_Serve_S1">
+        <dc:Bounds x="870" y="180" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Next_S1_di" bpmnElement="Gateway_Next_S1" isMarkerVisible="true">
+        <dc:Bounds x="1040" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1032" y="245" width="67" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_End_S1_di" bpmnElement="Event_End_S1">
+        <dc:Bounds x="1142" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1129" y="248" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Exit_S1_di" bpmnElement="Event_Exit_S1">
+        <dc:Bounds x="1242" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1233" y="245" width="57" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Recv_S1_di" bpmnElement="Event_Recv_S1">
+        <dc:Bounds x="802" y="282" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="845" y="290" width="69" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Lost_S1_di" bpmnElement="Event_Lost_S1">
+        <dc:Bounds x="452" y="302" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="446" y="341" width="48" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_S1_a_di" bpmnElement="Flow_S1_a">
+        <di:waypoint x="408" y="220" />
+        <di:waypoint x="450" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_b_di" bpmnElement="Flow_S1_b">
+        <di:waypoint x="560" y="220" />
+        <di:waypoint x="605" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_recv_di" bpmnElement="Flow_S1_recv">
+        <di:waypoint x="802" y="300" />
+        <di:waypoint x="630" y="300" />
+        <di:waypoint x="630" y="245" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_ok_di" bpmnElement="Flow_S1_ok">
+        <di:waypoint x="655" y="220" />
+        <di:waypoint x="710" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_lost_di" bpmnElement="Flow_S1_lost">
+        <di:waypoint x="630" y="245" />
+        <di:waypoint x="630" y="320" />
+        <di:waypoint x="488" y="320" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="529" y="326" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_c_di" bpmnElement="Flow_S1_c">
+        <di:waypoint x="820" y="220" />
+        <di:waypoint x="870" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_d_di" bpmnElement="Flow_S1_d">
+        <di:waypoint x="990" y="220" />
+        <di:waypoint x="1040" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_more_di" bpmnElement="Flow_S1_more">
+        <di:waypoint x="1090" y="220" />
+        <di:waypoint x="1142" y="220" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1109" y="202" width="19" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S1_done_di" bpmnElement="Flow_S1_done">
+        <di:waypoint x="1178" y="220" />
+        <di:waypoint x="1242" y="220" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1203" y="202" width="15" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_S3_di" bpmnElement="Participant_S3" isHorizontal="true">
+        <dc:Bounds x="310" y="782" width="1010" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Start_S3_di" bpmnElement="Event_Start_S3">
+        <dc:Bounds x="372" y="844" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="354" y="887" width="74" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SamplePath_S3_di" bpmnElement="Task_SamplePath_S3">
+        <dc:Bounds x="450" y="822" width="110" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Cap_S3_di" bpmnElement="Gateway_Cap_S3" isMarkerVisible="true">
+        <dc:Bounds x="605" y="837" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="598" y="797" width="65" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Wait_S3_di" bpmnElement="Task_Wait_S3">
+        <dc:Bounds x="710" y="822" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Serve_S3_di" bpmnElement="Task_Serve_S3">
+        <dc:Bounds x="870" y="822" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Next_S3_di" bpmnElement="Gateway_Next_S3" isMarkerVisible="true">
+        <dc:Bounds x="1040" y="837" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1032" y="887" width="67" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_End_S3_di" bpmnElement="Event_End_S3">
+        <dc:Bounds x="1142" y="844" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1129" y="806.5" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Exit_S3_di" bpmnElement="Event_Exit_S3">
+        <dc:Bounds x="1242" y="844" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1233" y="887" width="57" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Recv_S3_di" bpmnElement="Event_Recv_S3">
+        <dc:Bounds x="772" y="934" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="815" y="932" width="69" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_Lost_S3_di" bpmnElement="Event_Lost_S3">
+        <dc:Bounds x="502" y="944" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="496" y="983" width="48" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_S3_a_di" bpmnElement="Flow_S3_a">
+        <di:waypoint x="408" y="862" />
+        <di:waypoint x="450" y="862" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_b_di" bpmnElement="Flow_S3_b">
+        <di:waypoint x="560" y="862" />
+        <di:waypoint x="605" y="862" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_recv_di" bpmnElement="Flow_S3_recv">
+        <di:waypoint x="772" y="952" />
+        <di:waypoint x="630" y="952" />
+        <di:waypoint x="630" y="887" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_ok_di" bpmnElement="Flow_S3_ok">
+        <di:waypoint x="655" y="862" />
+        <di:waypoint x="710" y="862" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_lost_di" bpmnElement="Flow_S3_lost">
+        <di:waypoint x="630" y="887" />
+        <di:waypoint x="630" y="962" />
+        <di:waypoint x="538" y="962" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="561" y="968" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_c_di" bpmnElement="Flow_S3_c">
+        <di:waypoint x="820" y="862" />
+        <di:waypoint x="870" y="862" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_d_di" bpmnElement="Flow_S3_d">
+        <di:waypoint x="990" y="862" />
+        <di:waypoint x="1040" y="862" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_more_di" bpmnElement="Flow_S3_more">
+        <di:waypoint x="1090" y="862" />
+        <di:waypoint x="1142" y="862" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1109" y="844" width="19" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_done_di" bpmnElement="Flow_S3_done">
+        <di:waypoint x="1178" y="862" />
+        <di:waypoint x="1242" y="862" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1203" y="844" width="15" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="TextAnnotation_AnyToAny_di" bpmnElement="TextAnnotation_AnyToAny">
+        <dc:Bounds x="330" y="1090" width="599.9915654520917" height="70.17543859649123" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MFlow_S2_S3_di" bpmnElement="MFlow_S2_S3">
+        <di:waypoint x="1160" y="558" />
+        <di:waypoint x="1160" y="750" />
+        <di:waypoint x="250" y="750" />
+        <di:waypoint x="250" y="1020" />
+        <di:waypoint x="790" y="1020" />
+        <di:waypoint x="790" y="970" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="158" y="873" width="84" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MFlow_S1_S2_di" bpmnElement="MFlow_S1_S2">
+        <di:waypoint x="1160" y="202" />
+        <di:waypoint x="1160" y="80" />
+        <di:waypoint x="250" y="80" />
+        <di:waypoint x="250" y="700" />
+        <di:waypoint x="780" y="700" />
+        <di:waypoint x="780" y="648" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="158" y="364" width="84" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MFlow_S3_S1_di" bpmnElement="MFlow_S3_S1">
+        <di:waypoint x="1160" y="880" />
+        <di:waypoint x="1160" y="1050" />
+        <di:waypoint x="1520" y="1050" />
+        <di:waypoint x="1520" y="390" />
+        <di:waypoint x="820" y="390" />
+        <di:waypoint x="820" y="318" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1238" y="405" width="84" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -27,11 +27,18 @@ class EventType(Enum):
 # Entity must be defined before Event, since Event references it
 class Entity(BaseModel):
     id: int
+
+    # predetermined route: list of node ids the entity will visit, in order.
+    # sampled once at creation as a random permutation of a random subset
+    # of stations (no cycles, each station at most once).
+    path: list[int] = []
+    path_index: int = 0   # which hop of the path we are currently at
+
+    # state variables of Entity
     # one entry per node visited, in order:
     arrival_times: list[float] = []     # arrival_times[i] = time entering node i
     service_starts: list[float] = []    # service_starts[i] = time service began at node i
     departure_times: list[float] = []   # departure_times[i] = time leaving node i
-
 
 # each node is a complete queue -> useful for multiple queues
 # each node is a station with servers, exists for the whole simulation
@@ -45,20 +52,24 @@ class QueueNode(BaseModel):
     num_servers: int                                # c
     sys_capacity: int | None                        # N, where None means infinite
     queue_discipline: QueueDiscipline               # D
-    next_node: 'QueueNode | None' = None
-    is_source: bool = True                          # False = receives entities only via routing
+    # In the mesh model every node generates its own external arrivals
+    # AND can receive entities routed from any other node. The successor
+    # of a node is not fixed: it is the next id in the entity's own path.
+    # 'reachable' lists which node ids this node may route to (the
+    # topology). If empty, defaults to "all other nodes" at build time.
+    reachable: list[int] = []
 
+    # state variables of queue nodes
     waiting_queue: list[Entity] = []
     busy_servers: int = 0
 
-    # --- bookkeeping for statistics (area-under-curve method) ---
+    # area-under-curve method) 
     area_queue_length: float = 0.0   # integral of Lq(t) dt
     area_system_length: float = 0.0  # integral of L(t)  dt (queue + in service)
     last_event_time: float = 0.0
     total_arrivals: int = 0
     total_lost: int = 0
     total_served: int = 0
-
 
 @dataclass(order=True)  # order by time -> makes heapq work directly on Event
 class Event:
@@ -67,23 +78,45 @@ class Event:
     node: QueueNode = field(compare=False)
     entity: Entity = field(compare=False, default=None)
 
-
 class Simulation(BaseModel):
+    # state variables of the system
     clock: float = 0.0
     event_list: list[Event] = []
+
+
     nodes: list[QueueNode] = []
     entity_served: list[Entity] = []
     entity_counter: int = 0
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    def _node_by_id(self, node_id: int) -> QueueNode:
+        for n in self.nodes:
+            if n.id == node_id:
+                return n
+        raise KeyError(f"No node with id {node_id}")
+
+    def _sample_path(self, entry_node_id: int) -> list[int]:
+        """Build a random path: a random-length permutation of a random
+        subset of the stations, starting at entry_node_id, with no repeats
+        (no cycles). The entry node is always first; the remaining stations
+        are drawn from entry_node.reachable (or all other nodes)."""
+        entry = self._node_by_id(entry_node_id)
+        candidates = list(entry.reachable) if entry.reachable else \
+            [n.id for n in self.nodes if n.id != entry_node_id]
+        # random subset size in [0, len(candidates)], then random order
+        k = random.randint(0, len(candidates))
+        extra = random.sample(candidates, k)
+        return [entry_node_id] + extra
+
     def schedule(self, event: Event):
         heapq.heappush(self.event_list, event)
 
+    # numerical technique to track time changes of states
     def run(self, until: float):
+        # every node is an external source in the mesh model
         for node in self.nodes:
-            if node.is_source:
-                self.schedule_arrival(node)
+            self.schedule_arrival(node)
 
         while self.event_list:
             next_event = heapq.heappop(self.event_list)
@@ -97,11 +130,17 @@ class Simulation(BaseModel):
             self.process_event(next_event)
 
     def schedule_arrival(self, node: QueueNode):
+        """Generate the next EXTERNAL arrival at 'node'. The new entity gets
+        its full random path sampled now (predetermined route), starting at
+        this node."""
         time = self.clock + self.arrival_time(node)
-        cust = Entity(id=self.entity_counter, arrival_times=[time])
+        path = self._sample_path(node.id)
+        ent = Entity(id=self.entity_counter, path=path, path_index=0,
+                     arrival_times=[time])
         self.entity_counter += 1
-        self.schedule(Event(time=time, event_type=EventType.ARRIVAL, node=node, entity=cust))
+        self.schedule(Event(time=time, event_type=EventType.ARRIVAL, node=node, entity=ent))
 
+    # time changes of the state variables as a function of the events (activities)
     def process_event(self, event: Event):
         if event.event_type == EventType.ARRIVAL:
             self.handle_arrival(event)
@@ -139,7 +178,12 @@ class Simulation(BaseModel):
         else:
             node.waiting_queue.append(entity)
 
-        if node.is_source:
+        # In the mesh model EVERY node generates its own external arrivals.
+        # Re-arm the external arrival stream ONLY when this event is an
+        # external arrival (i.e. the entity is at the first hop of its path
+        # and that hop is this node). Routed arrivals (path_index > 0) must
+        # not spawn new external arrivals, otherwise the rate would explode.
+        if entity.path_index == 0 and entity.path and entity.path[0] == node.id:
             self.schedule_arrival(node)  # schedule next external arrival
 
     def handle_departure(self, event: Event):
@@ -148,10 +192,7 @@ class Simulation(BaseModel):
         entity.departure_times.append(self.clock)
         node.total_served += 1
 
-        # only count as "fully served" once it leaves the LAST node
-        if not node.next_node:
-            self.entity_served.append(entity)
-
+        # free the server / pull the next waiting entity into service
         if node.waiting_queue:
             next_entity = self.pick_next_entity(node)
             next_entity.service_starts.append(self.clock)
@@ -165,37 +206,27 @@ class Simulation(BaseModel):
         else:
             node.busy_servers -= 1
 
-        if node.next_node:
-            self.route_to_next(entity, node.next_node)
+        # routing: advance along the entity's predetermined path
+        entity.path_index += 1
+        if entity.path_index < len(entity.path):
+            next_node = self._node_by_id(entity.path[entity.path_index])
+            self.route_to_next(entity, next_node)
+        else:
+            # path complete -> entity exits the system
+            self.entity_served.append(entity)
 
     def final_statistics(self) -> dict:
         """Compute Wq, Lq, W, L, rho and other descriptive stats per node
-        and for the overall simulation. entity time fields are lists,
-        indexed by the order in which nodes were visited (0 = first node
-        visited, -1 = last node visited)."""
+        and for the overall simulation. In the mesh model each entity has
+        its OWN path, so the i-th time-field entry corresponds to the i-th
+        node in THAT entity's path. To collect per-node stats we look up,
+        for each served entity, the position of the node in its path."""
         # flush remaining area up to the final clock for every node
         for node in self.nodes:
             self._update_area_stats(node, self.clock)
 
-        # build a node-name -> position-in-path index, so we know which
-        # list index in each entity's time fields corresponds to which
-        # node. all entities follows same path
-        node_order = []
-        n = self.nodes[0] if self.nodes else None
-        # find a source node to start the path from
-        for candidate in self.nodes:
-            if candidate.is_source:
-                n = candidate
-                break
-        while n is not None:
-            node_order.append(n)
-            n = n.next_node
-        name_to_index = {nd.name: i for i, nd in enumerate(node_order)}
-
         results = {}
         for node in self.nodes:
-            idx = name_to_index.get(node.name)
-
             # Lq, L from area-under-curve
             Lq = node.area_queue_length / self.clock if self.clock > 0 else 0.0
             L = node.area_system_length / self.clock if self.clock > 0 else 0.0
@@ -204,14 +235,17 @@ class Simulation(BaseModel):
             rho = (node.area_system_length - node.area_queue_length) / (self.clock * node.num_servers) \
                 if self.clock > 0 else 0.0
 
-            # per-node Wq, W (stage-level), using each served entity's
-            # i-th visit (idx) - only entities that actually reached this
-            # node have an entry at position idx
+            # per-node Wq, W (stage-level): for each served entity, find
+            # where this node sits in the entity's path; if present and the
+            # entity has recorded times for that hop, accumulate the wait.
             wq_node, w_node = [], []
-            for c in self.entity_served:
-                if idx is not None and idx < len(c.arrival_times) and idx < len(c.departure_times):
-                    wq_node.append(c.service_starts[idx] - c.arrival_times[idx])
-                    w_node.append(c.departure_times[idx] - c.arrival_times[idx])
+            for e in self.entity_served:
+                if node.id in e.path:
+                    i = e.path.index(node.id)
+                    if i < len(e.arrival_times) and i < len(e.departure_times) \
+                            and i < len(e.service_starts):
+                        wq_node.append(e.service_starts[i] - e.arrival_times[i])
+                        w_node.append(e.departure_times[i] - e.arrival_times[i])
 
             results[node.name] = {
                 "Lq": Lq,                           # avg number of entities waiting
@@ -227,16 +261,16 @@ class Simulation(BaseModel):
             }
 
         # overall = full path through the system, first node entered ->
-        # last node departed. entity_served only contains entities
-        # that exited the LAST node (see handle_departure).
+        # last node departed. entity_served only contains entities that
+        # completed their whole path (see handle_departure).
         wq_overall, w_overall = [], []
-        for c in self.entity_served:
-            if c.arrival_times and c.departure_times and c.service_starts:
+        for e in self.entity_served:
+            if e.arrival_times and e.departure_times and e.service_starts:
+                hops = min(len(e.arrival_times), len(e.service_starts))
                 wq_overall.append(sum(
-                    c.service_starts[i] - c.arrival_times[i]
-                    for i in range(len(c.arrival_times))
+                    e.service_starts[i] - e.arrival_times[i] for i in range(hops)
                 ))
-                w_overall.append(c.departure_times[-1] - c.arrival_times[0])
+                w_overall.append(e.departure_times[-1] - e.arrival_times[0])
 
         results["overall"] = {
             "n_entities_served": len(self.entity_served),
@@ -348,7 +382,7 @@ if __name__ == "__main__":
     )
 
     sim = Simulation(nodes=[node])
-    sim.run(until=10000)
+    sim.run(until=100000)
     stats = sim.final_statistics()
 
     # M/M/1 closed-form formulas
@@ -370,46 +404,84 @@ if __name__ == "__main__":
         title="Example 1: single M/M/1 queue (lambda=0.8, mu=1.0)",
     )
 
-    # --- Example 2: tandem queue (multi-stage), node1 -> node2 ---
-    node1 = QueueNode(
+    # --- Example 2: 3-station mesh (any station -> any station) ---
+    # Every station generates its own external arrivals (A) and can route
+    # to any other station. Each entity's path is a random permutation of a
+    # random subset of stations, sampled at creation (no cycles).
+    s1 = QueueNode(
         id=1, name="Station_1",
-        arrival_rate=0.8, service_rate=1.0,
+        arrival_rate=0.3, service_rate=1.0,
         arrival_distribution=DistributionArrivalTimes.M,
         service_distribution=DistributionServiceTimes.M,
         num_servers=1, sys_capacity=None,
         queue_discipline=QueueDiscipline.FIFO,
-        is_source=True,
+        reachable=[2, 3],
     )
-    node2 = QueueNode(
+    s2 = QueueNode(
         id=2, name="Station_2",
-        arrival_rate=0.0, service_rate=1.2,
+        arrival_rate=0.3, service_rate=1.2,
         arrival_distribution=DistributionArrivalTimes.M,
-        service_distribution=DistributionServiceTimes.M,
-        num_servers=1, sys_capacity=5,
-        queue_discipline=QueueDiscipline.FIFO,
-        is_source=False,
+        service_distribution=DistributionServiceTimes.D,
+        num_servers=2, sys_capacity=10,
+        queue_discipline=QueueDiscipline.LIFO,
+        reachable=[1, 3],
     )
-    node1.next_node = node2
+    s3 = QueueNode(
+        id=3, name="Station_3",
+        arrival_rate=0.3, service_rate=0.9,
+        arrival_distribution=DistributionArrivalTimes.D,
+        service_distribution=DistributionServiceTimes.M,
+        num_servers=1, sys_capacity=None,
+        queue_discipline=QueueDiscipline.SIRO,
+        reachable=[1, 2],
+    )
 
-    sim2 = Simulation(nodes=[node1, node2])
-    sim2.run(until=10000)
+    sim2 = Simulation(nodes=[s1, s2, s3])
+    sim2.run(until=50000)
     stats2 = sim2.final_statistics()
 
-    # Theoretical reference for Station_1: pure M/M/1 with lam=0.8, mu=1.0
-    # For Station_2: arrivals are the departures of Station_1, which for an
-    # OPEN tandem M/M/1 network (Jackson's theorem) are Poisson(lam=0.8).
-    # But Station_2 has finite capacity N=5 -> blocking, so the closed-form
-    # M/M/1 no longer applies exactly. We leave its theoretical column empty.
-    s1_theo = {
-        "rho": 0.8, "Lq": 0.8**2 / 0.2, "L": 0.8 / 0.2,
-        "Wq": (0.8**2 / 0.2) / 0.8, "W": (0.8 / 0.2) / 0.8,
-    }
+    # --- Approximate theoretical reference for mesh stations ---
+    # Assumption: the total arrival process at each station is approximately
+    # Poisson with effective rate lambda_eff = lambda_ext + sum of routed.
+    # P(station j appears in path of entity born at i) = 1/2 when
+    # len(reachable_i) = 2 and subset size is uniform in [0, 2].
+    # lambda_eff_j = lambda_j + sum_{i != j} lambda_i * P(j in path from i)
+    import math
+    all_nodes = [s1, s2, s3]
+    node_map = {n.id: n for n in all_nodes}
 
-    print_comparison(
-        stats2, node_name="Station_1", theoretical=s1_theo, overall=False,
-        title="\nExample 2: tandem queue - Station_1 (M/M/1, infinite capacity)",
-    )
-    print_comparison(
-        stats2, node_name="Station_2", theoretical=None, overall=True,
-        title="\nExample 2: tandem queue - Station_2 (M/M/1/5, no closed-form due to blocking)",
-    )
+    def compute_lambda_eff(target: QueueNode) -> float:
+        lam = target.arrival_rate
+        for src in all_nodes:
+            if src.id == target.id:
+                continue
+            R = len(src.reachable) if src.reachable else len(all_nodes) - 1
+            p_included = 0.5  # = sum_{k=0}^{R} (1/(R+1))*(k/R) = 1/2
+            lam += src.arrival_rate * p_included
+        return lam
+
+    def mmc_theoretical(lam_eff: float, mu: float, c: int) -> dict:
+        """Approximate M/M/c steady-state formulas."""
+        rho = lam_eff / (c * mu)
+        if rho >= 1:
+            return {"rho": rho, "Lq": float('inf'), "L": float('inf'),
+                    "Wq": float('inf'), "W": float('inf')}
+        a = lam_eff / mu  # = c * rho
+        # P0
+        s = sum(a**n / math.factorial(n) for n in range(c))
+        s += a**c / (math.factorial(c) * (1 - rho))
+        P0 = 1.0 / s
+        # Lq (Erlang-C based)
+        Lq = P0 * a**c * rho / (math.factorial(c) * (1 - rho)**2)
+        Wq = Lq / lam_eff
+        W = Wq + 1.0 / mu
+        L = lam_eff * W
+        return {"rho": rho, "Lq": Lq, "L": L, "Wq": Wq, "W": W}
+
+    for nd in all_nodes:
+        lam_eff = compute_lambda_eff(nd)
+        theo = mmc_theoretical(lam_eff, nd.service_rate, nd.num_servers)
+        is_last = (nd.id == all_nodes[-1].id)
+        print_comparison(stats2, node_name=nd.name, theoretical=theo,
+                         overall=is_last,
+                         title=f"\nExample 2: 3-station mesh - {nd.name} (approx lambda_eff={lam_eff:.2f})")
