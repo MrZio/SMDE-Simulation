@@ -24,8 +24,8 @@ class EventType(Enum):
     DEPARTURE = 'Departure'
 
 
-# Customer must be defined before Event, since Event references it
-class Customer(BaseModel):
+# Entity must be defined before Event, since Event references it
+class Entity(BaseModel):
     id: int
     # one entry per node visited, in order:
     arrival_times: list[float] = []     # arrival_times[i] = time entering node i
@@ -46,9 +46,9 @@ class QueueNode(BaseModel):
     sys_capacity: int | None                        # N, where None means infinite
     queue_discipline: QueueDiscipline               # D
     next_node: 'QueueNode | None' = None
-    is_source: bool = True                          # False = receives customers only via routing
+    is_source: bool = True                          # False = receives entities only via routing
 
-    waiting_queue: list[Customer] = []
+    waiting_queue: list[entity] = []
     busy_servers: int = 0
 
     # --- bookkeeping for statistics (area-under-curve method) ---
@@ -65,15 +65,15 @@ class Event:
     time: float
     event_type: EventType = field(compare=False)
     node: QueueNode = field(compare=False)
-    customer: Customer = field(compare=False, default=None)
+    entity: Entity = field(compare=False, default=None)
 
 
 class Simulation(BaseModel):
     clock: float = 0.0
     event_list: list[Event] = []
     nodes: list[QueueNode] = []
-    customer_served: list[Customer] = []
-    customer_counter: int = 0
+    entity_served: list[Entity] = []
+    entity_counter: int = 0
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -98,9 +98,9 @@ class Simulation(BaseModel):
 
     def schedule_arrival(self, node: QueueNode):
         time = self.clock + self.arrival_time(node)
-        cust = Customer(id=self.customer_counter, arrival_times=[time])
-        self.customer_counter += 1
-        self.schedule(Event(time=time, event_type=EventType.ARRIVAL, node=node, customer=cust))
+        cust = Entity(id=self.entity_counter, arrival_times=[time])
+        self.entity_counter += 1
+        self.schedule(Event(time=time, event_type=EventType.ARRIVAL, node=node, entity=cust))
 
     def process_event(self, event: Event):
         if event.event_type == EventType.ARRIVAL:
@@ -119,58 +119,58 @@ class Simulation(BaseModel):
 
     def handle_arrival(self, event: Event):
         node = event.node
-        customer = event.customer
+        entity = event.entity
         node.total_arrivals += 1
 
         total_in_system = len(node.waiting_queue) + node.busy_servers
         if node.sys_capacity is not None and total_in_system >= node.sys_capacity:
-            node.total_lost += 1  # customer lost (blocked)
+            node.total_lost += 1  # entity lost (blocked)
         elif node.busy_servers < node.num_servers:  # a server is free
             node.busy_servers += 1
-            customer.service_starts.append(self.clock)
+            entity.service_starts.append(self.clock)
             service_time = self.service_time(node)
 
             self.schedule(Event(
                 time=self.clock + service_time,
                 event_type=EventType.DEPARTURE,
                 node=node,
-                customer=customer
+                entity=entity
             ))
         else:
-            node.waiting_queue.append(customer)
+            node.waiting_queue.append(entity)
 
         if node.is_source:
             self.schedule_arrival(node)  # schedule next external arrival
 
     def handle_departure(self, event: Event):
         node = event.node
-        customer = event.customer
-        customer.departure_times.append(self.clock)
+        entity = event.entity
+        entity.departure_times.append(self.clock)
         node.total_served += 1
 
         # only count as "fully served" once it leaves the LAST node
         if not node.next_node:
-            self.customer_served.append(customer)
+            self.entity_served.append(entity)
 
         if node.waiting_queue:
-            next_customer = self.pick_next_customer(node)
-            next_customer.service_starts.append(self.clock)
+            next_entity = self.pick_next_entity(node)
+            next_entity.service_starts.append(self.clock)
             service_time = self.service_time(node)
             self.schedule(Event(
                 time=self.clock + service_time,
                 event_type=EventType.DEPARTURE,
                 node=node,
-                customer=next_customer
+                entity=next_entity
             ))
         else:
             node.busy_servers -= 1
 
         if node.next_node:
-            self.route_to_next(customer, node.next_node)
+            self.route_to_next(entity, node.next_node)
 
     def final_statistics(self) -> dict:
         """Compute Wq, Lq, W, L, rho and other descriptive stats per node
-        and for the overall simulation. Customer time fields are lists,
+        and for the overall simulation. entity time fields are lists,
         indexed by the order in which nodes were visited (0 = first node
         visited, -1 = last node visited)."""
         # flush remaining area up to the final clock for every node
@@ -178,8 +178,8 @@ class Simulation(BaseModel):
             self._update_area_stats(node, self.clock)
 
         # build a node-name -> position-in-path index, so we know which
-        # list index in each customer's time fields corresponds to which
-        # node. all customers follows same path
+        # list index in each entity's time fields corresponds to which
+        # node. all entities follows same path
         node_order = []
         n = self.nodes[0] if self.nodes else None
         # find a source node to start the path from
@@ -204,18 +204,18 @@ class Simulation(BaseModel):
             rho = (node.area_system_length - node.area_queue_length) / (self.clock * node.num_servers) \
                 if self.clock > 0 else 0.0
 
-            # per-node Wq, W (stage-level), using each served customer's
-            # i-th visit (idx) - only customers that actually reached this
+            # per-node Wq, W (stage-level), using each served entity's
+            # i-th visit (idx) - only entities that actually reached this
             # node have an entry at position idx
             wq_node, w_node = [], []
-            for c in self.customer_served:
+            for c in self.entity_served:
                 if idx is not None and idx < len(c.arrival_times) and idx < len(c.departure_times):
                     wq_node.append(c.service_starts[idx] - c.arrival_times[idx])
                     w_node.append(c.departure_times[idx] - c.arrival_times[idx])
 
             results[node.name] = {
-                "Lq": Lq,                           # avg number of customers waiting
-                "L": L,                             # avg number of customers in system
+                "Lq": Lq,                           # avg number of entities waiting
+                "L": L,                             # avg number of entities in system
                 "rho": rho,                         # server utilization
                 "sys_capacity": node.sys_capacity,  # N (Kendall) - None = infinite
                 "num_servers": node.num_servers,    # c (Kendall)
@@ -227,10 +227,10 @@ class Simulation(BaseModel):
             }
 
         # overall = full path through the system, first node entered ->
-        # last node departed. customer_served only contains customers
+        # last node departed. entity_served only contains entities
         # that exited the LAST node (see handle_departure).
         wq_overall, w_overall = [], []
-        for c in self.customer_served:
+        for c in self.entity_served:
             if c.arrival_times and c.departure_times and c.service_starts:
                 wq_overall.append(sum(
                     c.service_starts[i] - c.arrival_times[i]
@@ -239,22 +239,22 @@ class Simulation(BaseModel):
                 w_overall.append(c.departure_times[-1] - c.arrival_times[0])
 
         results["overall"] = {
-            "n_customers_served": len(self.customer_served),
+            "n_entities_served": len(self.entity_served),
             "Wq": sum(wq_overall) / len(wq_overall) if wq_overall else 0.0,
             "W": sum(w_overall) / len(w_overall) if w_overall else 0.0,
             "simulation_time": self.clock,
         }
         return results
 
-    def pick_next_customer(self, node: QueueNode):
+    def pick_next_entity(self, node: QueueNode):
         if node.queue_discipline == QueueDiscipline.FIFO:
             return node.waiting_queue.pop(0)
         elif node.queue_discipline == QueueDiscipline.LIFO:
             return node.waiting_queue.pop(-1)
         elif node.queue_discipline == QueueDiscipline.SIRO:
-            customer = random.choice(node.waiting_queue)
-            node.waiting_queue.remove(customer)
-            return customer
+            entity = random.choice(node.waiting_queue)
+            node.waiting_queue.remove(entity)
+            return entity
 
     def arrival_time(self, node: QueueNode) -> float:
         if node.arrival_distribution == DistributionArrivalTimes.M:
@@ -270,14 +270,14 @@ class Simulation(BaseModel):
             return 1.0 / node.service_rate
         return random.uniform(0.5, 1.5)
 
-    def route_to_next(self, customer: Customer, next_node: QueueNode, delay: float = 0.0):
+    def route_to_next(self, entity: Entity, next_node: QueueNode, delay: float = 0.0):
         arrival_time_next = self.clock + delay
-        customer.arrival_times.append(arrival_time_next)
+        entity.arrival_times.append(arrival_time_next)
         self.schedule(Event(
             time=arrival_time_next,
             event_type=EventType.ARRIVAL,
             node=next_node,
-            customer=customer
+            entity=entity
         ))
 
 
@@ -328,7 +328,7 @@ def print_comparison(stats: dict, node_name: str, theoretical: dict | None = Non
     if overall and o is not None:
         print(f"\n[System-wide]")
         row("Simulation time", o["simulation_time"], fmt="{:.2f}")
-        row("Customers served", o["n_customers_served"], fmt="{}")
+        row("entities served", o["n_entities_served"], fmt="{}")
         row("Wq (overall)", o["Wq"], t.get("Wq_overall"))
         row("W  (overall)", o["W"],  t.get("W_overall"))
 
