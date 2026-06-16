@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from enum import Enum
 import heapq, random
 from dataclasses import dataclass, field
-
+import math
 
 class DistributionArrivalTimes(Enum):
     M = 'Markovian'
@@ -127,6 +127,8 @@ class Simulation(BaseModel):
             self._update_area_stats(next_event.node, next_event.time)
 
             self.clock = next_event.time
+            # print(f"| {self.clock} | {next_event.event_type} | {next_event.node.id} | {next_event.entity.id} | {next_event.node.busy_servers} |")
+
             self.process_event(next_event)
 
     def schedule_arrival(self, node: QueueNode):
@@ -366,91 +368,79 @@ def print_comparison(stats: dict, node_name: str, theoretical: dict | None = Non
         row("Wq (overall)", o["Wq"], t.get("Wq_overall"))
         row("W  (overall)", o["W"],  t.get("W_overall"))
 
+def print_replications(all_stats: list[dict], node_names: list[str], title: str = ""):
+    """Print one table per node: rows = runs, columns = Wq, W, Lq, L, rho, Arrivals, Served, Lost.
+    The last two rows are the mean and std-dev across all replications.
+ 
+    Parameters
+    ----------
+    all_stats   : list of dicts returned by sim.final_statistics(), one per run.
+    node_names  : list of node names to print (must match keys in the stats dicts).
+    title       : optional heading printed above all tables.
+    """
+    COLS   = ["Wq", "W", "Lq", "L", "rho", "Arrivals", "Served", "Lost"]
+    KEYS   = ["Wq", "W", "Lq", "L", "rho", "total_arrivals", "total_served", "total_lost"]
+    INT_KEYS = {"total_arrivals", "total_served", "total_lost"}
+    COL_W  = 11   # width of each data column
+    RUN_W  = 6    # width of the "Run" label column
+ 
+    if title:
+        print(f"\n{'=' * (RUN_W + 1 + len(COLS) * (COL_W + 1))}")
+        print(f" {title}")
+        print(f"{'=' * (RUN_W + 1 + len(COLS) * (COL_W + 1))}")
+ 
+    for node_name in node_names:
+        header_run  = f"{'Run':<{RUN_W}}"
+        header_cols = " ".join(f"{c:>{COL_W}}" for c in COLS)
+        separator   = "-" * (RUN_W + 1 + len(COLS) * (COL_W + 1))
+ 
+        print(f"\n  Node: {node_name}")
+        print(f"  {header_run} {header_cols}")
+        print(f"  {separator}")
+ 
+        # collect values for mean / std at the end
+        collected = {k: [] for k in KEYS}
+ 
+        for run_idx, stats in enumerate(all_stats, start=1):
+            s = stats[node_name]
+            row_vals = []
+            for k in KEYS:
+                v = s[k]
+                collected[k].append(v)
+                if k in INT_KEYS:
+                    row_vals.append(f"{int(v):>{COL_W}}")
+                else:
+                    row_vals.append(f"{v:>{COL_W}.4f}")
+            print(f"  {run_idx:<{RUN_W}} {' '.join(row_vals)}")
+ 
+        print(f"  {separator}")
+ 
+        # mean row
+        mean_vals = []
+        for k in KEYS:
+            m = sum(collected[k]) / len(collected[k])
+            if k in INT_KEYS:
+                mean_vals.append(f"{m:>{COL_W}.1f}")
+            else:
+                mean_vals.append(f"{m:>{COL_W}.4f}")
+        print(f"  {'Mean':<{RUN_W}} {' '.join(mean_vals)}")
+ 
+        # std-dev row
+        std_vals = []
+        n = len(all_stats)
+        for k in KEYS:
+            m = sum(collected[k]) / n
+            variance = sum((v - m) ** 2 for v in collected[k]) / (n - 1) if n > 1 else 0.0
+            sd = variance ** 0.5
+            if k in INT_KEYS:
+                std_vals.append(f"{sd:>{COL_W}.1f}")
+            else:
+                std_vals.append(f"{sd:>{COL_W}.4f}")
+        print(f"  {'Std':<{RUN_W}} {' '.join(std_vals)}")
 
-if __name__ == "__main__":
-    # --- Example 1: single M/M/1 queue, lambda=0.8, mu=1.0 (rho = 0.8) ---
-    node = QueueNode(
-        id=1,
-        name="M/M/1",
-        arrival_rate=0.8,
-        service_rate=1.0,
-        arrival_distribution=DistributionArrivalTimes.M,
-        service_distribution=DistributionServiceTimes.M,
-        num_servers=1,
-        sys_capacity=None,
-        queue_discipline=QueueDiscipline.FIFO,
-    )
 
-    sim = Simulation(nodes=[node])
-    sim.run(until=100000)
-    stats = sim.final_statistics()
-
-    # M/M/1 closed-form formulas
-    lam, mu = node.arrival_rate, node.service_rate
-    rho_theo = lam / mu
-    Lq_theo = rho_theo**2 / (1 - rho_theo)
-    L_theo = rho_theo / (1 - rho_theo)
-    Wq_theo = Lq_theo / lam
-    W_theo = L_theo / lam
-
-    print_comparison(
-        stats,
-        node_name="M/M/1",
-        theoretical={
-            "rho": rho_theo, "Lq": Lq_theo, "L": L_theo,
-            "Wq": Wq_theo,   "W":  W_theo,
-            "Wq_overall": Wq_theo, "W_overall": W_theo,  # same as stage for 1-node system
-        },
-        title="Example 1: single M/M/1 queue (lambda=0.8, mu=1.0)",
-    )
-
-    # --- Example 2: 3-station mesh (any station -> any station) ---
-    # Every station generates its own external arrivals (A) and can route
-    # to any other station. Each entity's path is a random permutation of a
-    # random subset of stations, sampled at creation (no cycles).
-    s1 = QueueNode(
-        id=1, name="Station_1",
-        arrival_rate=0.3, service_rate=1.0,
-        arrival_distribution=DistributionArrivalTimes.M,
-        service_distribution=DistributionServiceTimes.M,
-        num_servers=1, sys_capacity=None,
-        queue_discipline=QueueDiscipline.FIFO,
-        reachable=[2, 3],
-    )
-    s2 = QueueNode(
-        id=2, name="Station_2",
-        arrival_rate=0.3, service_rate=1.2,
-        arrival_distribution=DistributionArrivalTimes.M,
-        service_distribution=DistributionServiceTimes.D,
-        num_servers=2, sys_capacity=10,
-        queue_discipline=QueueDiscipline.LIFO,
-        reachable=[1, 3],
-    )
-    s3 = QueueNode(
-        id=3, name="Station_3",
-        arrival_rate=0.3, service_rate=0.9,
-        arrival_distribution=DistributionArrivalTimes.D,
-        service_distribution=DistributionServiceTimes.M,
-        num_servers=1, sys_capacity=None,
-        queue_discipline=QueueDiscipline.SIRO,
-        reachable=[1, 2],
-    )
-
-    sim2 = Simulation(nodes=[s1, s2, s3])
-    sim2.run(until=50000)
-    stats2 = sim2.final_statistics()
-
-    # --- Approximate theoretical reference for mesh stations ---
-    # Assumption: the total arrival process at each station is approximately
-    # Poisson with effective rate lambda_eff = lambda_ext + sum of routed.
-    # P(station j appears in path of entity born at i) = 1/2 when
-    # len(reachable_i) = 2 and subset size is uniform in [0, 2].
-    # lambda_eff_j = lambda_j + sum_{i != j} lambda_i * P(j in path from i)
-    import math
-    all_nodes = [s1, s2, s3]
-    node_map = {n.id: n for n in all_nodes}
-
-    def compute_lambda_eff(target: QueueNode) -> float:
+class Statistics(BaseModel):
+    def compute_lambda_eff(self, target: QueueNode, all_nodes: list[QueueNode]) -> float:
         lam = target.arrival_rate
         for src in all_nodes:
             if src.id == target.id:
@@ -460,7 +450,7 @@ if __name__ == "__main__":
             lam += src.arrival_rate * p_included
         return lam
 
-    def mmc_theoretical(lam_eff: float, mu: float, c: int) -> dict:
+    def mmc_theoretical(self, lam_eff: float, mu: float, c: int) -> dict:
         """Approximate M/M/c steady-state formulas."""
         rho = lam_eff / (c * mu)
         if rho >= 1:
@@ -478,10 +468,46 @@ if __name__ == "__main__":
         L = lam_eff * W
         return {"rho": rho, "Lq": Lq, "L": L, "Wq": Wq, "W": W}
 
-    for nd in all_nodes:
-        lam_eff = compute_lambda_eff(nd)
-        theo = mmc_theoretical(lam_eff, nd.service_rate, nd.num_servers)
-        is_last = (nd.id == all_nodes[-1].id)
-        print_comparison(stats2, node_name=nd.name, theoretical=theo,
-                         overall=is_last,
-                         title=f"\nExample 2: 3-station mesh - {nd.name} (approx lambda_eff={lam_eff:.2f})")
+if __name__ == "__main__":
+    # --- Example 1: station_1 -> station_2
+
+    N_RUNS    = 10
+    SIM_TIME  = 200
+ 
+    all_stats = []
+ 
+    for i in range(N_RUNS):
+        node0 = QueueNode(
+            id=0,
+            name="Station_A",
+            arrival_rate=0.8,
+            service_rate=1.0,
+            arrival_distribution=DistributionArrivalTimes.M,
+            service_distribution=DistributionServiceTimes.D,
+            num_servers=1,
+            sys_capacity=None,
+            queue_discipline=QueueDiscipline.FIFO,
+            reachable=[1],
+        )
+        node1 = QueueNode(
+            id=1,
+            name="Station_B",
+            arrival_rate=0.8,
+            service_rate=1.0,
+            arrival_distribution=DistributionArrivalTimes.M,
+            service_distribution=DistributionServiceTimes.M,
+            num_servers=1,
+            sys_capacity=None,
+            queue_discipline=QueueDiscipline.FIFO,
+        )
+        sim = Simulation(nodes=[node0, node1])
+        sim.run(until=SIM_TIME)
+        all_stats.append(sim.final_statistics())
+ 
+    print_replications(
+        all_stats,
+        node_names=["Station_A", "Station_B"],
+        title=f"Tandem M/M/1 -> M/M/1  (lambda=0.8, mu=1.0, {N_RUNS} runs x {SIM_TIME} time units)",
+    )
+
+
