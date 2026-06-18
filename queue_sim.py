@@ -867,7 +867,7 @@ def _build_ed_nodes(
 # ===========================================================================
 
 def run_ed_scenario(
-    lam: float             = 4 / 60,
+    tr_s_r: float             = 4 / 60,
     num_triage_nurses: int = 2,
     cap_h: int | None      = None,
     ward_probs: dict | None = None,
@@ -906,7 +906,7 @@ def run_ed_scenario(
     print("\n" + "=" * 72)
     print(" SCENARIO PS — Pronto Soccorso (routing probabilistico)")
     print("=" * 72)
-    print(f"  lam={lam:.4f} paz/min ({lam*60:.1f} paz/ora)  |  "
+    print(f"  tr_s_r={tr_s_r:.4f} paz/min ({tr_s_r*60:.1f} paz/ora)  |  "
           f"triage_nurses={num_triage_nurses}  |  cap_hospital={cap_str}")
     print(f"  Routing triage -> corsie:")
     for nid, p in ward_probs.items():
@@ -916,7 +916,7 @@ def run_ed_scenario(
     random.seed(seed)
     all_stats = []
     for _ in range(n_runs):
-        nodes = _build_ed_nodes(lam, num_triage_nurses, cap_h, ward_probs)
+        nodes = _build_ed_nodes(tr_s_r, num_triage_nurses, cap_h, ward_probs)
         sim   = SimulationED(nodes=nodes)
         sim.run(until=sim_time)
         all_stats.append(sim.final_statistics())
@@ -924,7 +924,7 @@ def run_ed_scenario(
     print_replications(
         all_stats,
         ALL_NODE_NAMES,
-        title=f"PS  lam={lam:.4f}  nurses={num_triage_nurses}"
+        title=f"PS  ltr_s_ram={tr_s_r:.4f}  nurses={num_triage_nurses}"
               f"  cap_h={cap_str}  ({n_runs} run x {sim_time:.0f} min)",
     )
     return all_stats
@@ -960,6 +960,13 @@ def run_ed_doe(
       Wq_overall, W_overall,
       rho e Lost per: Segreteria, Triage, ogni corsia, Hospitalizzazione
 
+    Inoltre, per le tre metriche primarie usate nell'analisi DoE
+    (Wq_tot, rho_Hospital, Lost_Hospital) viene calcolata anche la
+    deviazione standard fra le repliche (correzione di Bessel, n-1
+    al denominatore), salvata nei campi "<metrica>_std". Questi valori
+    permettono di stimare MS_E e quindi di completare il test F
+    dell'ANOVA, cosa non possibile usando solo le medie di cella.
+
     Return
     ------
     Lista di dizionari risultato — uno per combinazione DoE.
@@ -994,14 +1001,16 @@ def run_ed_doe(
     print(f"  Totale run simulazione         : {total_combos * n_runs}")
 
     # Intestazione tabella — una colonna rho e Lost per ogni corsia + hospital
+    # + std per le 3 metriche chiave (Wq_tot, rho_Hos, Lost_Hos) usate nell'ANOVA
     hdr = (
-        f"{'#':>3}  {'lam/h':>6}  {'nurses':>6}  {'cap_h':>6}  "
-        f"{'Wq_tot':>8}  {'W_tot':>8}  "
+        f"{'#':>3}  {'triage_service_rate (patients/h)':>6}  {'nurses':>6}  {'cap_h':>6}  "
+        f"{'Wq_tot':>8}  {'Wq_std':>7}  "
+        f"{'W_tot':>8}  "
         f"{'rho_Seg':>8}  {'rho_Tri':>8}  "
         f"{'rho_Bia':>8}  {'rho_Gia':>8}  {'rho_Ver':>8}  {'rho_Ros':>8}  "
-        f"{'rho_Hos':>8}  "
+        f"{'rho_Hos':>8}  {'rho_std':>7}  "
         f"{'Lost_Bia':>9}  {'Lost_Gia':>9}  {'Lost_Ver':>9}  {'Lost_Ros':>9}  "
-        f"{'Lost_Hos':>9}"
+        f"{'Lost_Hos':>9}  {'Lost_std':>8}"
     )
     print("\n" + hdr)
     print("-" * len(hdr))
@@ -1023,14 +1032,26 @@ def run_ed_doe(
                     sim.run(until=sim_time)
                     run_stats.append(sim.final_statistics())
 
-                # Media sulle repliche per una singola metrica
+                # Media e deviazione standard sulle repliche per una singola metrica
                 def avg(node_name: str, metric: str) -> float:
                     vals = [s[node_name][metric] for s in run_stats
                             if node_name in s]
                     return sum(vals) / len(vals) if vals else 0.0
 
+                def std(node_name: str, metric: str) -> float:
+                    vals = [s[node_name][metric] for s in run_stats
+                            if node_name in s]
+                    n_v = len(vals)
+                    if n_v < 2:
+                        return 0.0
+                    m = sum(vals) / n_v
+                    var = sum((v - m) ** 2 for v in vals) / (n_v - 1)  # Bessel
+                    return var ** 0.5
+
                 Wq_tot      = avg("overall",          "Wq")
+                Wq_tot_std  = std("overall",          "Wq")
                 W_tot       = avg("overall",          "W")
+                W_tot_std   = std("overall",          "W")
                 rho_seg     = avg("Segreteria",       "rho")
                 rho_tri     = avg("Triage",           "rho")
                 rho_bia     = avg("Corsia_Bianca",    "rho")
@@ -1038,24 +1059,27 @@ def run_ed_doe(
                 rho_ver     = avg("Corsia_Verde",     "rho")
                 rho_ros     = avg("Corsia_Rossa",     "rho")
                 rho_hos     = avg("Hospitalizzazione","rho")
+                rho_hos_std = std("Hospitalizzazione","rho")
                 lost_bia    = avg("Corsia_Bianca",    "total_lost")
                 lost_gia    = avg("Corsia_Gialla",    "total_lost")
                 lost_ver    = avg("Corsia_Verde",     "total_lost")
                 lost_ros    = avg("Corsia_Rossa",     "total_lost")
                 lost_hos    = avg("Hospitalizzazione","total_lost")
+                lost_hos_std= std("Hospitalizzazione","total_lost")
                 cap_str     = str(cap_h) if cap_h is not None else "inf"
 
                 row = (
                     f"{combo_num:>3}  {tr_s_r*60:>6.1f}  {num_triage_nurses:>6}  "
                     f"{cap_str:>6}  "
-                    f"{Wq_tot:>8.3f}  {W_tot:>8.3f}  "
+                    f"{Wq_tot:>8.3f}  {Wq_tot_std:>7.3f}  "
+                    f"{W_tot:>8.3f}  "
                     f"{rho_seg:>8.4f}  {rho_tri:>8.4f}  "
                     f"{rho_bia:>8.4f}  {rho_gia:>8.4f}  "
                     f"{rho_ver:>8.4f}  {rho_ros:>8.4f}  "
-                    f"{rho_hos:>8.4f}  "
+                    f"{rho_hos:>8.4f}  {rho_hos_std:>7.4f}  "
                     f"{lost_bia:>9.1f}  {lost_gia:>9.1f}  "
                     f"{lost_ver:>9.1f}  {lost_ros:>9.1f}  "
-                    f"{lost_hos:>9.1f}"
+                    f"{lost_hos:>9.1f}  {lost_hos_std:>8.1f}"
                 )
                 print(row)
 
@@ -1067,7 +1091,9 @@ def run_ed_doe(
                     "cap_h":             cap_h,
                     # medie per nodo
                     "Wq_tot":            Wq_tot,
+                    "Wq_tot_std":        Wq_tot_std,
                     "W_tot":             W_tot,
+                    "W_tot_std":         W_tot_std,
                     "rho_Segreteria":    rho_seg,
                     "rho_Triage":        rho_tri,
                     "rho_Bianca":        rho_bia,
@@ -1075,11 +1101,13 @@ def run_ed_doe(
                     "rho_Verde":         rho_ver,
                     "rho_Rossa":         rho_ros,
                     "rho_Hospital":      rho_hos,
+                    "rho_Hospital_std":  rho_hos_std,
                     "Lost_Bianca":       lost_bia,
                     "Lost_Gialla":       lost_gia,
                     "Lost_Verde":        lost_ver,
                     "Lost_Rossa":        lost_ros,
                     "Lost_Hospital":     lost_hos,
+                    "Lost_Hospital_std": lost_hos_std,
                 })
 
     print()
