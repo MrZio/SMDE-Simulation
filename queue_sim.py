@@ -39,7 +39,7 @@ Probabilita' di assegnazione corsia dal triage (configurabili):
   Bianca=0.40  Gialla=0.20  Verde=0.30  Rossa=0.10
 
 Parametri DoE (variabili):
-  - lam              : arrival rate (pazienti/min)  es. [4/60, 6/60, 8/60]
+  - triage_service_r : triage service rate (pazienti/min)  es. [4/60, 6/60, 8/60]
   - num_triage_nurses: infermieri al triage          es. [1, 2, 3]
   - cap_h            : capacita' hospitalizzazione   es. [5, 10, None]
 
@@ -710,7 +710,7 @@ ALL_NODE_NAMES = [
 
 
 def _build_ed_nodes(
-    lam: float,
+    triage_service_r: float,
     num_triage_nurses: int,
     cap_h: int | None,
     ward_probs: dict[int, float] | None = None,
@@ -721,7 +721,7 @@ def _build_ed_nodes(
 
     Parametri
     ---------
-    lam               : arrival rate esterno (pazienti/min)
+    triage_service_r               : arrival rate esterno (pazienti/min)
     num_triage_nurses : numero di infermieri al triage (c del nodo Triage)
     cap_h             : capacita' del reparto Hospitalizzazione (None = inf)
     ward_probs        : dizionario {node_id: probabilita'} per le corsie.
@@ -755,7 +755,7 @@ def _build_ed_nodes(
     n_segreteria = make_node(
         id=NODE_SEGRETERIA,
         name="Segreteria",
-        lam=lam,
+        lam=6/60,
         mu=2.0,           # 2 pz/min  ->  30 s medi per accettazione
         c=2,              # 2 segretari
         N=50,
@@ -770,7 +770,7 @@ def _build_ed_nodes(
         id=NODE_TRIAGE,
         name="Triage",
         lam=0.0,
-        mu=1.0,               # 1 pz/min  ->  1 min medio per triage
+        mu=triage_service_r,               # 1 pz/min  ->  1 min medio per triage
         c=num_triage_nurses,
         N=50,
         arr=DistributionArrivalTimes.M,
@@ -935,7 +935,7 @@ def run_ed_scenario(
 # ===========================================================================
 
 def run_ed_doe(
-    arrival_rates:      list[float]      = None,
+    triage_service_r:      list[float]      = None,
     triage_nurses_list: list[int]        = None,
     cap_h_list:         list[int | None] = None,
     ward_probs: dict | None              = None,
@@ -950,7 +950,7 @@ def run_ed_doe(
 
     Parametri DoE (liste di livelli)
     ---------------------------------
-    arrival_rates      : es. [4/60, 6/60, 8/60]   (pazienti/min)
+    triage_service_r      : es. [4/60, 6/60, 8/60]   (pazienti/min)
     triage_nurses_list : es. [1, 2, 3]
     cap_h_list         : es. [5, 10, None]
     ward_probs         : probabilita' fisse per le corsie (invarianti nel DoE).
@@ -964,8 +964,8 @@ def run_ed_doe(
     ------
     Lista di dizionari risultato — uno per combinazione DoE.
     """
-    if arrival_rates is None:
-        arrival_rates = [4 / 60, 6 / 60, 8 / 60]
+    if triage_service_r is None:
+        triage_service_r =  [0.5, 2.0]
     if triage_nurses_list is None:
         triage_nurses_list = [1, 2, 3]
     if cap_h_list is None:
@@ -984,12 +984,12 @@ def run_ed_doe(
     print(f"  Routing triage -> corsie:")
     for nid, p in ward_probs.items():
         print(f"    {ALL_NODE_NAMES[nid]:<20} p={p:.2f}")
-    print(f"  Fattore A — lam (paz/min)      : {[f'{r*60:.1f}/h' for r in arrival_rates]}")
+    print(f"  Fattore A — triage_service_rate (paz/min)      : {[f'{r*60:.1f}/h' for r in triage_service_r]}")
     print(f"  Fattore B — triage_nurses      : {triage_nurses_list}")
     print(f"  Fattore C — cap_hospital       : {cap_h_list}")
     print(f"  Repliche x combinazione        : {n_runs}")
     print(f"  Tempo simulazione              : {sim_time:.0f} min")
-    total_combos = len(arrival_rates) * len(triage_nurses_list) * len(cap_h_list)
+    total_combos = len(triage_service_r) * len(triage_nurses_list) * len(cap_h_list)
     print(f"  Totale combinazioni            : {total_combos}")
     print(f"  Totale run simulazione         : {total_combos * n_runs}")
 
@@ -1009,7 +1009,7 @@ def run_ed_doe(
     results_doe = []
     combo_num   = 0
 
-    for lam in arrival_rates:
+    for tr_s_r in triage_service_r:
         for num_triage_nurses in triage_nurses_list:
             for cap_h in cap_h_list:
                 combo_num += 1
@@ -1017,7 +1017,7 @@ def run_ed_doe(
 
                 run_stats = []
                 for _ in range(n_runs):
-                    nodes = _build_ed_nodes(lam, num_triage_nurses,
+                    nodes = _build_ed_nodes(tr_s_r, num_triage_nurses,
                                             cap_h, ward_probs)
                     sim = SimulationED(nodes=nodes)
                     sim.run(until=sim_time)
@@ -1046,7 +1046,7 @@ def run_ed_doe(
                 cap_str     = str(cap_h) if cap_h is not None else "inf"
 
                 row = (
-                    f"{combo_num:>3}  {lam*60:>6.1f}  {num_triage_nurses:>6}  "
+                    f"{combo_num:>3}  {tr_s_r*60:>6.1f}  {num_triage_nurses:>6}  "
                     f"{cap_str:>6}  "
                     f"{Wq_tot:>8.3f}  {W_tot:>8.3f}  "
                     f"{rho_seg:>8.4f}  {rho_tri:>8.4f}  "
@@ -1061,8 +1061,8 @@ def run_ed_doe(
 
                 results_doe.append({
                     "combo":             combo_num,
-                    "lam":               lam,
-                    "lam_per_ora":       lam * 60,
+                    "triage_service":               tr_s_r,
+                    "triage_service_per_ora":       tr_s_r * 60,
                     "num_triage_nurses": num_triage_nurses,
                     "cap_h":             cap_h,
                     # medie per nodo
@@ -1154,7 +1154,7 @@ if __name__ == "__main__":
     )
     
     run_ed_doe(
-        arrival_rates      = [4/60, 8/60],   # − and +
+        triage_service_r   = [4/60, 8/60],   # − and +
         triage_nurses_list = [1, 3],         # − and +
         cap_h_list         = [5, 10],        # − and +
         ward_probs         = WARD_PROBS,
