@@ -1154,7 +1154,7 @@ if __name__ == "__main__":
     )
     
     run_ed_doe(
-        triage_service_r   = [4/60, 8/60],   # − and +
+        triage_service_r   = [0.5, 2.0]   # − and +
         triage_nurses_list = [1, 3],         # − and +
         cap_h_list         = [5, 10],        # − and +
         ward_probs         = WARD_PROBS,
