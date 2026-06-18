@@ -658,10 +658,19 @@ def run_multiseed_validation():
     print_replications(all_stats_tandem, ["Station_A", "Station_B"], title="Tandem (10 seeds)")
 
 
-
 # ===========================================================================
 # Entry point
 # ===========================================================================
 
 if __name__ == "__main__":
     run_multiseed_validation()
+    
+    # Scenario 1: M/M/1 singola stazione
+    run_scenario1(n_runs=10, sim_time=50_000)
+
+    # Scenario 2: tandem M/M/1 -> M/M/1
+    run_scenario2(n_runs=10, sim_time=50_000)
+
+    # Scenario 3: mesh 3 nodi (parametri stabili)
+    run_scenario3(n_runs=10, sim_time=50_000,
+                  lam=0.3, mu_A=1.0, mu_B=1.2, mu_C=0.8)
