@@ -1,0 +1,57 @@
+* ===========================================================================
+* tandem_MM1_MM1.gps  --  GPSS World
+* ---------------------------------------------------------------------------
+* Modello tandem puro per validazione con queue_sim3.py
+*
+*   Station_1 : M/M/1   lambda=0.8  mu=1.0   rho_teoria=0.8
+*   Station_2 : M/M/1   mu=1.0      (riceve il flusso in uscita da Station_1)
+*               Per il teorema di Burke: flusso in uscita da M/M/1 stabile
+*               e' ancora Poisson con lo stesso lambda -> rho_2 = 0.8
+*
+* Report GPSS  <->  Python final_statistics()
+*   STORAGE SERV1  UTIL.          = rho_1
+*   STORAGE SERV2  UTIL.          = rho_2
+*   QUEUE   WAIT1  AVE.CONT/TIME  = Lq_1, Wq_1
+*   QUEUE   WAIT2  AVE.CONT/TIME  = Lq_2, Wq_2
+*   QUEUE   SYS1   AVE.CONT/TIME  = L_1,  W_1
+*   QUEUE   SYS2   AVE.CONT/TIME  = L_2,  W_2
+*
+* Run lungo (50000 time units) per convergenza statistica affidabile.
+* ===========================================================================
+
+SERV1   STORAGE     1               ; Station_1: c=1 server
+SERV2   STORAGE     1               ; Station_2: c=1 server
+
+        SIMULATE
+        RMULT       123459           ; seed allineato a random.seed(123459) in Python
+
+* ---- Arrivi esterni: M/M/1, lambda=0.8 -> IAT = 1/0.8 = 1.25 ------------
+        GENERATE    (Exponential(1,0,1.25))
+
+* ---- Station_1 : M/M/1 ----------------------------------------------------
+        QUEUE       SYS1             ; entra nel sistema 1  -> L1, W1
+        QUEUE       WAIT1            ; entra in coda 1      -> Lq1, Wq1
+        ENTER       SERV1            ; occupa un server
+        DEPART      WAIT1            ; esce dalla coda (inizia servizio)
+        ADVANCE     (Exponential(2,0,1.0))  ; servizio exp, mu=1.0, E[S]=1.0
+        LEAVE       SERV1            ; libera il server
+        DEPART      SYS1             ; esce dal sistema 1
+
+* ---- Routing deterministico a Station_2 (tandem puro, no blocking) --------
+*      Nessun TEST: Station_2 e' M/M/1 con capacita' infinita.
+
+* ---- Station_2 : M/M/1 ----------------------------------------------------
+        QUEUE       SYS2             ; entra nel sistema 2  -> L2, W2
+        QUEUE       WAIT2            ; entra in coda 2      -> Lq2, Wq2
+        ENTER       SERV2            ; occupa un server
+        DEPART      WAIT2            ; esce dalla coda (inizia servizio)
+        ADVANCE     (Exponential(3,0,1.0))  ; servizio exp, mu=1.0, E[S]=1.0
+        LEAVE       SERV2            ; libera il server
+        DEPART      SYS2             ; esce dal sistema 2
+
+        TERMINATE                    ; entita' completata
+
+* ---- Timer: run di 50000 time units ---------------------------------------
+        GENERATE    50000
+        TERMINATE   1
+        START       1
