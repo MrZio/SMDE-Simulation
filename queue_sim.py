@@ -632,21 +632,36 @@ def run_doe(n_runs=5, sim_time=20_000, seed=123459):
     print()
     return results_doe
 
+def run_multiseed_validation():
+    seeds = [111111, 222222, 333333, 444444, 555555, 666666, 777777, 888888, 999999, 123457]
+    sim_time = 50000
+    
+    print("\n=== PYTHON VALIDATION: M/M/1 ===")
+    all_stats_mm1 = []
+    for s in seeds:
+        random.seed(s)
+        node = make_node(0, "Station_A", lam=0.8, mu=1.0)
+        sim = Simulation(nodes=[node])
+        sim.run(until=sim_time)
+        all_stats_mm1.append(sim.final_statistics())
+    print_replications(all_stats_mm1, ["Station_A"], title="M/M/1 (10 seeds)")
+
+    print("\n=== PYTHON VALIDATION: TANDEM ===")
+    all_stats_tandem = []
+    for s in seeds:
+        random.seed(s)
+        nA = make_node(0, "Station_A", lam=0.8, mu=1.0, reachable=[1])
+        nB = make_node(1, "Station_B", lam=0.0, mu=1.0, reachable=[])
+        sim = Simulation(nodes=[nA, nB])
+        sim.run(until=sim_time)
+        all_stats_tandem.append(sim.final_statistics())
+    print_replications(all_stats_tandem, ["Station_A", "Station_B"], title="Tandem (10 seeds)")
+
+
 
 # ===========================================================================
 # Entry point
 # ===========================================================================
 
 if __name__ == "__main__":
-    # Scenario 1: M/M/1 singola stazione
-    run_scenario1(n_runs=10, sim_time=50_000)
-
-    # Scenario 2: tandem M/M/1 -> M/M/1
-    run_scenario2(n_runs=10, sim_time=50_000)
-
-    # Scenario 3: mesh 3 nodi (parametri stabili)
-    run_scenario3(n_runs=10, sim_time=50_000,
-                  lam=0.3, mu_A=1.0, mu_B=1.2, mu_C=0.8)
-
-    # Scenario 4: DoE 2^3
-    run_doe(n_runs=5, sim_time=20_000)
+    run_multiseed_validation()
