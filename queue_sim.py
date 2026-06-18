@@ -1,16 +1,52 @@
 """
-queue_sim3_extended.py
-======================
-Discrete-event simulator esteso da queue_sim3.py.
+queue_sim_ed.py
+===============
+Modello di simulazione a eventi discreti per un Pronto Soccorso (PS).
+Basato su queue_sim3_extended.py.
 
-Aggiunge rispetto alla versione precedente:
-  - Supporto a N nodi arbitrari in topologia qualsiasi (tandem, mesh, fork...)
-  - Scenario 1: validazione M/M/1 singola stazione (confronto teorico Erlang)
-  - Scenario 2: tandem puro M/M/1 -> M/M/1  (confronto con Burke e GPSS)
-  - Scenario 3: rete mesh 3 stazioni (modello PR-01, pronto per DoE)
-  - print_comparison() con valori teorici M/M/c
-  - print_replications() per tabelle multi-run (identica a sim3)
-  - Seed per riproducibilita' (allineato a GPSS RMULT 123459)
+Motore originale (classi Entity, QueueNode, Event, Simulation) NON modificato.
+Il routing probabilistico e' implementato tramite:
+  1. Campo opzionale  routing_weights: list[float]  aggiunto a QueueNode
+     (lista di pesi parallela a reachable; None = routing deterministico tandem)
+  2. Sottoclasse      SimulationED(Simulation)
+     che sovrascrive solo _sample_path per gestire il fork probabilistico
+     al nodo Triage, lasciando invariato tutto il resto del motore.
+
+Topologia ED (7 nodi):
+
+  [0] Segreteria      M/M/2/50    FIFO  <- unico ingresso esterno (lam)
+        |
+  [1] Triage          M/M/c_t/50  FIFO  <- c_t = num_triage_nurses (DoE)
+        |
+      fork PROBABILISTICO (routing_weights sul nodo Triage):
+        |-- p=0.40 --> [2] Corsia_Bianca  M/D/1/inf  FIFO
+        |-- p=0.20 --> [3] Corsia_Gialla  M/D/1/5    FIFO
+        |-- p=0.30 --> [4] Corsia_Verde   M/D/1/5    FIFO
+        |-- p=0.10 --> [5] Corsia_Rossa   M/D/3/5    FIFO
+                             |
+                      [6] Hospitalizzazione  M/M/3/cap_h  FIFO  (cap_h DoE)
+
+Parametri fissi (da specifica clinica):
+  - Segreteria:       mu=2.0/min  (30 s/pz),   c=2,  N=50
+  - Triage:           mu=1.0/min  (1 min/pz),   c=num_triage_nurses, N=50
+  - Corsia Bianca:    mu=0.5/min  (2 min/pz),   c=1,  N=inf, svc=D
+  - Corsia Gialla:    mu=0.25/min (4 min/pz),   c=1,  N=5,   svc=D
+  - Corsia Verde:     mu=0.25/min (4 min/pz),   c=1,  N=5,   svc=D
+  - Corsia Rossa:     mu=0.1/min  (10 min/pz),  c=3,  N=5,   svc=D
+  - Hospitalizzazione:mu=0.033/min(30 min/pz),  c=3,  N=cap_h, svc=M
+
+Probabilita' di assegnazione corsia dal triage (configurabili):
+  Bianca=0.40  Gialla=0.20  Verde=0.30  Rossa=0.10
+
+Parametri DoE (variabili):
+  - lam              : arrival rate (pazienti/min)  es. [4/60, 6/60, 8/60]
+  - num_triage_nurses: infermieri al triage          es. [1, 2, 3]
+  - cap_h            : capacita' hospitalizzazione   es. [5, 10, None]
+
+Scenari disponibili:
+  - run_scenario1/2/3  : invariati (validazione modello originale)
+  - run_ed_scenario    : singola run PS con routing probabilistico
+  - run_ed_doe         : griglia multi-scenario (DoE PS)
 """
 
 from pydantic import BaseModel, ConfigDict
@@ -71,6 +107,13 @@ class QueueNode(BaseModel):
     # topologia: lista degli id nodo verso cui questa stazione instrada
     # [] = nodo terminale (le entita' escono dal sistema dopo il servizio)
     reachable: list[int] = []
+
+    # pesi per routing probabilistico (parallelo a reachable).
+    # None  -> routing deterministico: viene usato sempre reachable[0]
+    #          (comportamento originale, invariato per tutti i nodi tranne Triage)
+    # lista -> random.choices(reachable, weights=routing_weights) al momento
+    #          del campionamento del path per ogni entita'.
+    routing_weights: list[float] | None = None
 
     # stato run-time
     waiting_queue: list[Entity] = []
@@ -303,6 +346,55 @@ class Simulation(BaseModel):
         elif node.service_distribution == DistributionServiceTimes.D:
             return 1.0 / node.service_rate
         return random.uniform(0.5, 1.5)
+
+
+# ---------------------------------------------------------------------------
+# SimulationED — sottoclasse con routing probabilistico al Triage
+# ---------------------------------------------------------------------------
+
+class SimulationED(Simulation):
+    """
+    Estende Simulation sovrascrivendo _sample_path per supportare il fork
+    probabilistico al nodo Triage.
+
+    Logica di _sample_path:
+      - Per ogni nodo del percorso, se il nodo ha routing_weights definiti,
+        il successore viene scelto con random.choices(reachable, weights).
+      - Se routing_weights e' None (tutti i nodi originali e quelli tandem),
+        il comportamento e' identico all'originale: si segue reachable[0].
+      - Il path completo viene campionato una sola volta per entita', al
+        momento dell'arrivo alla Segreteria, esattamente come nel motore base.
+
+    Nessun altro metodo e' modificato.
+    """
+
+    def _sample_path(self, entry_node_id: int) -> list[int]:
+        """
+        Campiona il percorso completo dell'entita' a partire da entry_node_id.
+
+        Per i nodi con routing_weights definiti (es. Triage) sceglie il
+        successore probabilisticamente; per tutti gli altri usa reachable[0]
+        (routing deterministico tandem, comportamento originale).
+        """
+        path    = [entry_node_id]
+        current = self._node_by_id(entry_node_id)
+
+        while current.reachable:
+            if current.routing_weights is not None:
+                # fork probabilistico: campiona UN successore secondo i pesi
+                next_id = random.choices(
+                    current.reachable,
+                    weights=current.routing_weights,
+                    k=1,
+                )[0]
+            else:
+                # routing deterministico originale: primo elemento di reachable
+                next_id = current.reachable[0]
+
+            path.append(next_id)
+            current = self._node_by_id(next_id)
+
+        return path
 
 
 # ---------------------------------------------------------------------------
@@ -567,66 +659,427 @@ def run_scenario3(n_runs=10, sim_time=50_000, seed=123459,
 
 
 # ===========================================================================
-# SCENARIO 4 – DoE 2^3  (pronto per il report)
+# PRONTO SOCCORSO — topologia ED
+# ===========================================================================
+#
+# Struttura a 7 nodi (IDs fissi):
+#
+#   0  Segreteria      M/M/2/50     FIFO   <- unico punto di ingresso esterno
+#   1  Triage          M/M/c_t/50   FIFO   <- c_t = num_triage_nurses (DoE)
+#   2  Corsia_Bianca   M/D/1/inf    FIFO   <- codice bianco (non urgente)
+#   3  Corsia_Gialla   M/D/1/5      FIFO   <- codice giallo (urgente)
+#   4  Corsia_Verde    M/D/1/5      FIFO   <- codice verde (poco urgente)
+#   5  Corsia_Rossa    M/D/3/5      FIFO   <- codice rosso (emergenza)
+#   6  Hospitalizzazione M/M/3/cap_h FIFO  <- reparto degenza (DoE)
+#
+# Percorso di default (routing deterministico tandem, reachable[0]):
+#   Segreteria -> Triage -> Corsia_Bianca -> Hospitalizzazione
+#
+# Ogni paziente riceve la corsia in modo probabilistico al momento del triage.
+# In questo modo ogni scenario DoE testa un percorso specifico mantenendo
+# la stessa logica di routing tandem del motore originale.
+#
+# Parametri fissi (da specifica clinica):
+#   Segreteria  : mu=2.0  (tempo medio servizio 0.5 min = 30 s)
+#   Triage      : mu=1.0  (tempo medio servizio 1 min)
+#   C. Bianca   : mu=0.5  (2 min), svc=D, c=1, N=inf
+#   C. Gialla   : mu=0.25 (4 min), svc=D, c=1, N=5
+#   C. Verde    : mu=0.25 (4 min), svc=D, c=1, N=5
+#   C. Rossa    : mu=0.1  (10 min),svc=D, c=3, N=5
+#   Hospital.   : mu=0.033(30 min),svc=M, c=3, N=cap_h
+# ---------------------------------------------------------------------------
+
+# Nomi e ID dei nodi — usati anche come chiavi nei risultati
+NODE_SEGRETERIA   = 0
+NODE_TRIAGE       = 1
+NODE_BIANCA       = 2
+NODE_GIALLA       = 3
+NODE_VERDE        = 4
+NODE_ROSSA        = 5
+NODE_HOSPITAL     = 6
+
+ALL_NODE_NAMES = [
+    "Segreteria",
+    "Triage",
+    "Corsia_Bianca",
+    "Corsia_Gialla",
+    "Corsia_Verde",
+    "Corsia_Rossa",
+    "Hospitalizzazione",
+]
+
+
+def _build_ed_nodes(
+    lam: float,
+    num_triage_nurses: int,
+    cap_h: int | None,
+    ward_probs: dict[int, float] | None = None,
+) -> list:
+    """
+    Costruisce la lista di QueueNode per la topologia PS con routing
+    probabilistico dal Triage alle corsie.
+
+    Parametri
+    ---------
+    lam               : arrival rate esterno (pazienti/min)
+    num_triage_nurses : numero di infermieri al triage (c del nodo Triage)
+    cap_h             : capacita' del reparto Hospitalizzazione (None = inf)
+    ward_probs        : dizionario {node_id: probabilita'} per le corsie.
+                        Default:
+                          NODE_BIANCA=0.40, NODE_GIALLA=0.20,
+                          NODE_VERDE=0.30,  NODE_ROSSA=0.10
+
+    Topologia risultante:
+        Segreteria [0] -> Triage [1] --(prob)--> Corsia_X [2/3/4/5]
+                                                      |
+                                           Hospitalizzazione [6]
+    """
+    if ward_probs is None:
+        ward_probs = {
+            NODE_BIANCA: 0.40,
+            NODE_GIALLA: 0.20,
+            NODE_VERDE:  0.30,
+            NODE_ROSSA:  0.10,
+        }
+
+    # Ordine fisso delle corsie nel reachable del Triage
+    ward_ids    = [NODE_BIANCA, NODE_GIALLA, NODE_VERDE, NODE_ROSSA]
+    ward_weights = [ward_probs.get(wid, 0.0) for wid in ward_ids]
+
+    # Normalizzazione difensiva (somma deve essere 1.0)
+    total_w = sum(ward_weights)
+    if abs(total_w - 1.0) > 1e-9:
+        ward_weights = [w / total_w for w in ward_weights]
+
+    # --- nodo 0 : Segreteria  M/M/2/50 FIFO ---
+    n_segreteria = make_node(
+        id=NODE_SEGRETERIA,
+        name="Segreteria",
+        lam=lam,
+        mu=2.0,           # 2 pz/min  ->  30 s medi per accettazione
+        c=2,              # 2 segretari
+        N=50,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.D,
+        disc=QueueDiscipline.FIFO,
+        reachable=[NODE_TRIAGE],
+    )
+
+    # --- nodo 1 : Triage  M/M/c_t/50 FIFO  + routing probabilistico ---
+    n_triage = make_node(
+        id=NODE_TRIAGE,
+        name="Triage",
+        lam=0.0,
+        mu=1.0,               # 1 pz/min  ->  1 min medio per triage
+        c=num_triage_nurses,
+        N=50,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.M,
+        disc=QueueDiscipline.FIFO,
+        reachable=ward_ids,          # tutte e 4 le corsie
+    )
+    # Assegna i pesi: SimulationED li usa in _sample_path
+    n_triage.routing_weights = ward_weights
+
+    # --- nodo 2 : Corsia Bianca  M/D/1/inf FIFO ---
+    n_bianca = make_node(
+        id=NODE_BIANCA,
+        name="Corsia_Bianca",
+        lam=0.0,
+        mu=0.5,           # 2 min medi
+        c=1,
+        N=None,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.M,
+        disc=QueueDiscipline.FIFO,
+        reachable=[NODE_HOSPITAL],
+    )
+
+    # --- nodo 3 : Corsia Gialla  M/D/1/5 FIFO ---
+    n_gialla = make_node(
+        id=NODE_GIALLA,
+        name="Corsia_Gialla",
+        lam=0.0,
+        mu=0.25,          # 4 min medi
+        c=1,
+        N=5,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.M,
+        disc=QueueDiscipline.FIFO,
+        reachable=[NODE_HOSPITAL],
+    )
+
+    # --- nodo 4 : Corsia Verde  M/D/1/5 FIFO ---
+    n_verde = make_node(
+        id=NODE_VERDE,
+        name="Corsia_Verde",
+        lam=0.0,
+        mu=0.25,
+        c=1,
+        N=5,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.M,
+        disc=QueueDiscipline.FIFO,
+        reachable=[NODE_HOSPITAL],
+    )
+
+    # --- nodo 5 : Corsia Rossa  M/D/3/5 FIFO ---
+    n_rossa = make_node(
+        id=NODE_ROSSA,
+        name="Corsia_Rossa",
+        lam=0.0,
+        mu=0.1,           # 10 min medi  (emergenza)
+        c=3,
+        N=5,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.M,
+        disc=QueueDiscipline.FIFO,
+        reachable=[NODE_HOSPITAL],
+    )
+
+    # --- nodo 6 : Hospitalizzazione  M/M/3/cap_h FIFO ---
+    n_hospital = make_node(
+        id=NODE_HOSPITAL,
+        name="Hospitalizzazione",
+        lam=0.0,
+        mu=0.033,         # ~30 min medi di degenza
+        c=3,
+        N=cap_h,
+        arr=DistributionArrivalTimes.M,
+        svc=DistributionServiceTimes.D,
+        disc=QueueDiscipline.FIFO,
+        reachable=[],     # nodo terminale
+    )
+
+    return [
+        n_segreteria,
+        n_triage,
+        n_bianca,
+        n_gialla,
+        n_verde,
+        n_rossa,
+        n_hospital,
+    ]
+
+
+# ===========================================================================
+# SCENARIO ED — singola run del Pronto Soccorso
 # ===========================================================================
 
-def run_doe(n_runs=5, sim_time=20_000, seed=123459):
+def run_ed_scenario(
+    lam: float             = 4 / 60,
+    num_triage_nurses: int = 2,
+    cap_h: int | None      = None,
+    ward_probs: dict | None = None,
+    n_runs: int            = 10,
+    sim_time: float        = 50_000,
+    seed: int              = 123459,
+) -> list[dict]:
     """
-    Design of Experiments 2^3:
-      Fattore 1: lambda  (livello -: 0.3,  livello +: 0.5)
-      Fattore 2: mu_B    (livello -: 0.8,  livello +: 1.2)
-      Fattore 3: cap_C   (livello -: None, livello +: 5  )
+    Esegue n_runs repliche del modello PS con routing probabilistico
+    dal Triage alle corsie e stampa la tabella per tutti i nodi.
 
-    Risposta: Wq_overall (attesa media nel sistema intero),
-              rho_A, rho_B, rho_C, total_lost_C
+    Parametri
+    ---------
+    lam               : arrival rate (pazienti/min). Default = 4/ora.
+    num_triage_nurses : infermieri al triage.
+    cap_h             : capacita' reparto Hospitalizzazione (None = inf).
+    ward_probs        : dizionario {node_id: prob} per le corsie.
+                        Default: Bianca=0.40, Gialla=0.20, Verde=0.30, Rossa=0.10
+    n_runs            : numero di repliche.
+    sim_time          : durata simulazione (minuti simulati).
+    seed              : seed iniziale.
+
+    Return
+    ------
+    Lista di dizionari statistici (uno per replica).
     """
-    print("\n" + "="*70)
-    print(" SCENARIO 4 — DoE 2^3")
-    print("="*70)
-    print(f" Fattori: lambda (-:0.3 / +:0.5) | mu_B (-:0.8 / +:1.2)"
-          f" | cap_C (-:inf / +:5)")
-    print(f" {n_runs} run x {sim_time} t.u. per combinazione\n")
+    if ward_probs is None:
+        ward_probs = {
+            NODE_BIANCA: 0.40,
+            NODE_GIALLA: 0.20,
+            NODE_VERDE:  0.30,
+            NODE_ROSSA:  0.10,
+        }
+    cap_str = str(cap_h) if cap_h is not None else "inf"
 
-    levels = {
-        "lam":   (0.3, 0.5),
-        "mu_B":  (0.8, 1.2),
-        "cap_C": (None, 5),
-    }
-    header = (f"{'Run#':>5}  {'lam':>5}  {'mu_B':>5}  {'cap_C':>6}  "
-              f"{'Wq_tot':>8}  {'rho_A':>7}  {'rho_B':>7}  {'rho_C':>7}  {'Lost_C':>7}")
-    print(header)
-    print("-" * len(header))
+    print("\n" + "=" * 72)
+    print(" SCENARIO PS — Pronto Soccorso (routing probabilistico)")
+    print("=" * 72)
+    print(f"  lam={lam:.4f} paz/min ({lam*60:.1f} paz/ora)  |  "
+          f"triage_nurses={num_triage_nurses}  |  cap_hospital={cap_str}")
+    print(f"  Routing triage -> corsie:")
+    for nid, p in ward_probs.items():
+        print(f"    {ALL_NODE_NAMES[nid]:<20} p={p:.2f}")
+    print(f"  {n_runs} repliche x {sim_time:.0f} min simulati")
+
+    random.seed(seed)
+    all_stats = []
+    for _ in range(n_runs):
+        nodes = _build_ed_nodes(lam, num_triage_nurses, cap_h, ward_probs)
+        sim   = SimulationED(nodes=nodes)
+        sim.run(until=sim_time)
+        all_stats.append(sim.final_statistics())
+
+    print_replications(
+        all_stats,
+        ALL_NODE_NAMES,
+        title=f"PS  lam={lam:.4f}  nurses={num_triage_nurses}"
+              f"  cap_h={cap_str}  ({n_runs} run x {sim_time:.0f} min)",
+    )
+    return all_stats
+
+
+# ===========================================================================
+# SCENARIO ED — DoE multi-scenario (griglia di combinazioni)
+# ===========================================================================
+
+def run_ed_doe(
+    arrival_rates:      list[float]      = None,
+    triage_nurses_list: list[int]        = None,
+    cap_h_list:         list[int | None] = None,
+    ward_probs: dict | None              = None,
+    n_runs: int         = 10,
+    sim_time: float     = 50_000,
+    seed: int           = 123459,
+) -> list[dict]:
+    """
+    Griglia DoE per il Pronto Soccorso con routing probabilistico.
+    Ogni combinazione (lam, num_triage_nurses, cap_h) e' un singolo scenario;
+    per ogni scenario vengono eseguite n_runs repliche con SimulationED.
+
+    Parametri DoE (liste di livelli)
+    ---------------------------------
+    arrival_rates      : es. [4/60, 6/60, 8/60]   (pazienti/min)
+    triage_nurses_list : es. [1, 2, 3]
+    cap_h_list         : es. [5, 10, None]
+    ward_probs         : probabilita' fisse per le corsie (invarianti nel DoE).
+                         Default: Bianca=0.40, Gialla=0.20, Verde=0.30, Rossa=0.10
+
+    Risposta per ogni combinazione (media sulle n_runs repliche):
+      Wq_overall, W_overall,
+      rho e Lost per: Segreteria, Triage, ogni corsia, Hospitalizzazione
+
+    Return
+    ------
+    Lista di dizionari risultato — uno per combinazione DoE.
+    """
+    if arrival_rates is None:
+        arrival_rates = [4 / 60, 6 / 60, 8 / 60]
+    if triage_nurses_list is None:
+        triage_nurses_list = [1, 2, 3]
+    if cap_h_list is None:
+        cap_h_list = [5, 10, None]
+    if ward_probs is None:
+        ward_probs = {
+            NODE_BIANCA: 0.40,
+            NODE_GIALLA: 0.20,
+            NODE_VERDE:  0.30,
+            NODE_ROSSA:  0.10,
+        }
+
+    print("\n" + "=" * 72)
+    print(" DoE PS — Pronto Soccorso (routing probabilistico)")
+    print("=" * 72)
+    print(f"  Routing triage -> corsie:")
+    for nid, p in ward_probs.items():
+        print(f"    {ALL_NODE_NAMES[nid]:<20} p={p:.2f}")
+    print(f"  Fattore A — lam (paz/min)      : {[f'{r*60:.1f}/h' for r in arrival_rates]}")
+    print(f"  Fattore B — triage_nurses      : {triage_nurses_list}")
+    print(f"  Fattore C — cap_hospital       : {cap_h_list}")
+    print(f"  Repliche x combinazione        : {n_runs}")
+    print(f"  Tempo simulazione              : {sim_time:.0f} min")
+    total_combos = len(arrival_rates) * len(triage_nurses_list) * len(cap_h_list)
+    print(f"  Totale combinazioni            : {total_combos}")
+    print(f"  Totale run simulazione         : {total_combos * n_runs}")
+
+    # Intestazione tabella — una colonna rho e Lost per ogni corsia + hospital
+    hdr = (
+        f"{'#':>3}  {'lam/h':>6}  {'nurses':>6}  {'cap_h':>6}  "
+        f"{'Wq_tot':>8}  {'W_tot':>8}  "
+        f"{'rho_Seg':>8}  {'rho_Tri':>8}  "
+        f"{'rho_Bia':>8}  {'rho_Gia':>8}  {'rho_Ver':>8}  {'rho_Ros':>8}  "
+        f"{'rho_Hos':>8}  "
+        f"{'Lost_Bia':>9}  {'Lost_Gia':>9}  {'Lost_Ver':>9}  {'Lost_Ros':>9}  "
+        f"{'Lost_Hos':>9}"
+    )
+    print("\n" + hdr)
+    print("-" * len(hdr))
 
     results_doe = []
-    run_num = 0
-    for lam in levels["lam"]:
-        for mu_B in levels["mu_B"]:
-            for cap_C in levels["cap_C"]:
-                run_num += 1
-                random.seed(seed + run_num)
+    combo_num   = 0
+
+    for lam in arrival_rates:
+        for num_triage_nurses in triage_nurses_list:
+            for cap_h in cap_h_list:
+                combo_num += 1
+                random.seed(seed + combo_num)
+
                 run_stats = []
                 for _ in range(n_runs):
-                    nA = make_node(0, "Station_A", lam=lam,  mu=1.0,  reachable=[1])
-                    nB = make_node(1, "Station_B", lam=0.0,  mu=mu_B, reachable=[2])
-                    nC = make_node(2, "Station_C", lam=0.0,  mu=0.8,
-                                   N=cap_C, reachable=[])
-                    sim = Simulation(nodes=[nA, nB, nC])
+                    nodes = _build_ed_nodes(lam, num_triage_nurses,
+                                            cap_h, ward_probs)
+                    sim = SimulationED(nodes=nodes)
                     sim.run(until=sim_time)
                     run_stats.append(sim.final_statistics())
 
-                Wq_tot = sum(s["overall"]["Wq"]      for s in run_stats) / n_runs
-                rho_A  = sum(s["Station_A"]["rho"]   for s in run_stats) / n_runs
-                rho_B  = sum(s["Station_B"]["rho"]   for s in run_stats) / n_runs
-                rho_C  = sum(s["Station_C"]["rho"]   for s in run_stats) / n_runs
-                lost_C = sum(s["Station_C"]["total_lost"] for s in run_stats) / n_runs
-                cap_str = str(cap_C) if cap_C else "inf"
-                print(f"  {run_num:>3}  {lam:>5.1f}  {mu_B:>5.1f}  {cap_str:>6}  "
-                      f"{Wq_tot:>8.4f}  {rho_A:>7.4f}  {rho_B:>7.4f}"
-                      f"  {rho_C:>7.4f}  {lost_C:>7.1f}")
+                # Media sulle repliche per una singola metrica
+                def avg(node_name: str, metric: str) -> float:
+                    vals = [s[node_name][metric] for s in run_stats
+                            if node_name in s]
+                    return sum(vals) / len(vals) if vals else 0.0
+
+                Wq_tot      = avg("overall",          "Wq")
+                W_tot       = avg("overall",          "W")
+                rho_seg     = avg("Segreteria",       "rho")
+                rho_tri     = avg("Triage",           "rho")
+                rho_bia     = avg("Corsia_Bianca",    "rho")
+                rho_gia     = avg("Corsia_Gialla",    "rho")
+                rho_ver     = avg("Corsia_Verde",     "rho")
+                rho_ros     = avg("Corsia_Rossa",     "rho")
+                rho_hos     = avg("Hospitalizzazione","rho")
+                lost_bia    = avg("Corsia_Bianca",    "total_lost")
+                lost_gia    = avg("Corsia_Gialla",    "total_lost")
+                lost_ver    = avg("Corsia_Verde",     "total_lost")
+                lost_ros    = avg("Corsia_Rossa",     "total_lost")
+                lost_hos    = avg("Hospitalizzazione","total_lost")
+                cap_str     = str(cap_h) if cap_h is not None else "inf"
+
+                row = (
+                    f"{combo_num:>3}  {lam*60:>6.1f}  {num_triage_nurses:>6}  "
+                    f"{cap_str:>6}  "
+                    f"{Wq_tot:>8.3f}  {W_tot:>8.3f}  "
+                    f"{rho_seg:>8.4f}  {rho_tri:>8.4f}  "
+                    f"{rho_bia:>8.4f}  {rho_gia:>8.4f}  "
+                    f"{rho_ver:>8.4f}  {rho_ros:>8.4f}  "
+                    f"{rho_hos:>8.4f}  "
+                    f"{lost_bia:>9.1f}  {lost_gia:>9.1f}  "
+                    f"{lost_ver:>9.1f}  {lost_ros:>9.1f}  "
+                    f"{lost_hos:>9.1f}"
+                )
+                print(row)
+
                 results_doe.append({
-                    "run": run_num, "lam": lam, "mu_B": mu_B, "cap_C": cap_C,
-                    "Wq_tot": Wq_tot, "rho_A": rho_A, "rho_B": rho_B,
-                    "rho_C": rho_C, "lost_C": lost_C,
+                    "combo":             combo_num,
+                    "lam":               lam,
+                    "lam_per_ora":       lam * 60,
+                    "num_triage_nurses": num_triage_nurses,
+                    "cap_h":             cap_h,
+                    # medie per nodo
+                    "Wq_tot":            Wq_tot,
+                    "W_tot":             W_tot,
+                    "rho_Segreteria":    rho_seg,
+                    "rho_Triage":        rho_tri,
+                    "rho_Bianca":        rho_bia,
+                    "rho_Gialla":        rho_gia,
+                    "rho_Verde":         rho_ver,
+                    "rho_Rossa":         rho_ros,
+                    "rho_Hospital":      rho_hos,
+                    "Lost_Bianca":       lost_bia,
+                    "Lost_Gialla":       lost_gia,
+                    "Lost_Verde":        lost_ver,
+                    "Lost_Rossa":        lost_ros,
+                    "Lost_Hospital":     lost_hos,
                 })
 
     print()
@@ -638,15 +1091,50 @@ def run_doe(n_runs=5, sim_time=20_000, seed=123459):
 # ===========================================================================
 
 if __name__ == "__main__":
-    # Scenario 1: M/M/1 singola stazione
+
+    # ------------------------------------------------------------------
+    # Scenari di validazione originali (invariati)
+    # ------------------------------------------------------------------
     run_scenario1(n_runs=10, sim_time=50_000)
-
-    # Scenario 2: tandem M/M/1 -> M/M/1
     run_scenario2(n_runs=10, sim_time=50_000)
-
-    # Scenario 3: mesh 3 nodi (parametri stabili)
     run_scenario3(n_runs=10, sim_time=50_000,
                   lam=0.3, mu_A=1.0, mu_B=1.2, mu_C=0.8)
 
-    # Scenario 4: DoE 2^3
-    run_doe(n_runs=5, sim_time=20_000)
+    # ------------------------------------------------------------------
+    # Probabilita' di assegnazione corsia (configurabili globalmente)
+    # ------------------------------------------------------------------
+    #   Bianca = 0.40  (codice bianco, non urgente)
+    #   Gialla = 0.20  (codice giallo, urgente)
+    #   Verde  = 0.30  (codice verde, poco urgente)
+    #   Rossa  = 0.10  (codice rosso, emergenza)
+    # ------------------------------------------------------------------
+    WARD_PROBS = {
+        NODE_BIANCA: 0.40,
+        NODE_GIALLA: 0.20,
+        NODE_VERDE:  0.30,
+        NODE_ROSSA:  0.10,
+    }
+
+    # ------------------------------------------------------------------
+    # Scenario PS — singola run (parametri base da specifica)
+    #   4 pazienti/ora, 2 infermieri triage, hospitalizzazione infinita
+    # ------------------------------------------------------------------
+    run_ed_scenario(
+        lam               = 6 / 60,
+        num_triage_nurses = 2,
+        cap_h             = None,
+        ward_probs        = WARD_PROBS,
+        n_runs            = 10,
+        sim_time          = 50_000,
+        seed              = 123459,
+    )
+    
+    run_ed_doe(
+        arrival_rates      = [4/60, 8/60],   # − and +
+        triage_nurses_list = [1, 3],         # − and +
+        cap_h_list         = [5, 10],        # − and +
+        ward_probs         = WARD_PROBS,
+        n_runs             = 10,
+        sim_time           = 50_000,
+        seed               = 123459,
+    )
